@@ -1,0 +1,12 @@
+/build/
+/out/
+/.cache/
+/Testing/
+*.fst
+*.vcd
+*.vpd
+*.gtkw
+data/generated/
+results/
+*.csv.tmp
+

@@ -1,0 +1,19 @@
+{
+  "orderBookDepth": 10,
+  "clockPeriodNs": 10,
+  "featureWindowEvents": 64,
+  "featureBatchSize": 1024,
+  "learningRate": 0.001,
+  "l2Regularisation": 0.0001,
+  "labelHorizonEvents": 100,
+  "weightUpdateIntervalBatches": 10,
+  "buyThreshold": 0.2,
+  "sellThreshold": -0.2,
+  "dashboardPort": 8080,
+  "dashboardUpdateHz": 10,
+  "enableTrace": false,
+  "enableOpenCLProfiling": false,
+  "allowCrossedBooks": false,
+  "randomSeed": 42
+}
+

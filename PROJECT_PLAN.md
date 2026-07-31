@@ -1,0 +1,428 @@
+# Adaptive FPGA–GPU Market Signal Engine
+
+## 1. Delivery plan
+
+### Goal
+
+Build a reproducible research prototype in which:
+
+- C++ replays decoded market events and coordinates all components.
+- A cycle-accurate Verilated SystemVerilog model owns the order book, feature calculation, and BUY/SELL/HOLD decision.
+- An OpenCL GPU learner trains an eight-feature online logistic-regression model in batches.
+- Model parameters are committed atomically back into the RTL model.
+- A browser dashboard observes runtime state without entering the critical processing path.
+
+This is a heterogeneous-computing demonstration, not a live trading or execution system.
+
+### Version 1 success criteria
+
+The version is complete when one command can:
+
+1. load deterministic single-instrument market events;
+2. process them through a 10×10-level Verilated order book;
+3. produce fixed-point features and BUY/SELL/HOLD signals;
+4. prove RTL and C++ model agreement;
+5. form delayed labels and train an OpenCL model asynchronously;
+6. commit complete parameter sets atomically to the RTL model;
+7. publish throttled state to a browser dashboard;
+8. write reproducible benchmark results; and
+9. pass all automated tests from a clean build.
+
+### Scope boundaries
+
+Version 1 includes one instrument, aggregated price levels, four event types, eight features, a linear signal model, OpenCL learning, and simulation-only FPGA execution.
+
+It excludes exchange-native protocols, order-ID/FIFO matching, live data, execution, multiple instruments, physical FPGA deployment, direct FPGA–GPU DMA, and complex machine-learning models.
+
+## 2. Architecture and component ownership
+
+```text
+Event file/generator
+        |
+        v
+C++ runtime and reference model
+        |
+        | valid/ready event interface
+        v
+Verilated FPGA model
+  parser -> 10x10 book -> features -> score/signal
+       ^                         |
+       | atomic parameters       | feature samples
+       |                         v
+       +--- OpenCL learner <- pinned double buffers
+
+C++ immutable snapshots -> WebSocket server -> browser
+```
+
+Ownership rules:
+
+- RTL is authoritative for simulated market state and signals.
+- The C++ reference model is the correctness oracle during development and testing.
+- C++ owns replay, delayed-label construction, buffer scheduling, configuration, metrics, and error handling.
+- OpenCL owns batched model updates while weights remain device-resident.
+- The dashboard receives snapshots only; it cannot modify the processing pipeline.
+
+## 3. Milestones
+
+| Milestone | Outcome | Exit gate |
+|---|---|---|
+| M0: Bootstrap | Buildable repository and verified dependencies | Configure/build/test works; device enumeration works |
+| M1: Software oracle | Canonical protocol and deterministic C++ model | Replay is deterministic and unit-tested |
+| M2: RTL order book | Parser and bounded 10-level book | 1,000,000-event differential test passes |
+| M3: RTL signal path | Fixed-point features, strategy, parameter banks | Features agree within tolerance; actions agree exactly |
+| M4: Runtime | Full replay through Verilator | One-command replay completes and reports metrics |
+| M5: GPU data path | Safe asynchronous pinned double buffering | Transfer tests pass with no buffer ownership violation |
+| M6: Adaptive loop | Delayed labels, GPU training, RTL commits | CPU/GPU agree; model version and score update correctly |
+| M7: Observability | WebSocket dashboard | Disconnect-safe 10 Hz updates with measured overhead |
+| M8: Release candidate | Tests, benchmarks, docs, demo package | Clean-clone reproducibility and final demo pass |
+
+Each milestone is gated. Work should not build on an unverified numerical or protocol layer.
+
+## 4. Proposed schedule
+
+The source document proposes four weeks. That is feasible only for focused full-time work with Verilator and a working OpenCL GPU available at the start. A safer estimate is five to six weeks including integration and debugging.
+
+### Week 1 — Foundations and software oracle
+
+- Complete M0 and M1.
+- Freeze event, fixed-point, feature, and signal semantics in documentation.
+- Generate deterministic sample and randomized data.
+
+### Week 2 — RTL book and differential testing
+
+- Complete M2.
+- Concentrate on reset, backpressure, insertion/removal shifts, saturation, and invariants.
+
+### Week 3 — RTL features, strategy, and runtime
+
+- Complete M3 and M4.
+- Define tolerances before comparison tests.
+- Add optional FST/VCD tracing, disabled by default.
+
+### Week 4 — OpenCL and adaptive loop
+
+- Complete M5 and M6.
+- Benchmark batch sizes 256, 512, 1,024, 2,048, and 4,096.
+
+### Week 5 — Dashboard, benchmarking, and hardening
+
+- Complete M7.
+- Run sanitizers, long differential tests, and failure-path tests.
+- Measure dashboard overhead and tracing overhead.
+
+### Week 6 — Reproducibility and release buffer
+
+- Complete M8.
+- Validate on a clean environment, finish documentation, and resolve integration defects.
+
+If only four weeks are available, preserve correctness and the adaptive loop; reduce dashboard polish and the breadth of benchmark analysis.
+
+## 5. Detailed implementation plan
+
+### Phase 0 — Repository and environment
+
+Deliver:
+
+- the documented directory layout;
+- top-level CMake with strong warnings and optional sanitizers;
+- dependency detection for Verilator, OpenCL, Boost, and JSON;
+- a typed JSON configuration loader;
+- minimal CLI and test runner;
+- build, test, demo, and benchmark scripts; and
+- CI for the CPU-only build plus an explicit capability report for optional hardware/GPU jobs.
+
+Implementation notes:
+
+- Treat missing required dependencies as clear configure-time or startup errors.
+- Support `--list-opencl-devices`, `--no-gpu`, and `--reference-only` early.
+- Do not silently select a CPU OpenCL device when GPU was requested.
+- Copy or locate OpenCL kernels deterministically from the build output.
+
+Acceptance:
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+./build/market_engine_demo --list-opencl-devices
+```
+
+Current environment note: CMake 3.22.1, GCC 11.4, Python 3.10, Boost, and OpenCL libraries were detected. Verilator was not found on `PATH` and must be installed before RTL phases can pass.
+
+### Phase 1 — Canonical protocol and C++ reference
+
+Implement:
+
+- strongly typed `MarketEvent`, `Side`, `EventType`, `FeatureVector`, `Signal`, and parameter types;
+- CSV and fixed-layout binary codecs with version/magic validation;
+- a 10-level bid/ask book with deterministic add, update, cancel, and trade semantics;
+- Q16.16 conversion, rounding, multiplication, and saturation helpers;
+- the eight-feature reference engine;
+- the reference score and threshold logic;
+- deterministic Python event generation; and
+- invariant checks after every reference-model event.
+
+Design decisions to freeze before RTL:
+
+- exact invalid-price representation;
+- malformed and crossed-book policy;
+- cancel/trade behavior when quantity exceeds visible quantity;
+- zero-denominator feature values;
+- window definition and reset behavior for flow and volatility;
+- signed rounding rule for fixed-point division;
+- accumulator width and saturation point; and
+- whether an event emits a feature/signal when one book side is empty.
+
+Acceptance:
+
+- repeated runs with seed 42 produce byte-identical input and output;
+- unit tests cover every operation and numerical edge case;
+- invalid input fails with an actionable message; and
+- a sample replay produces stable book, feature, and signal snapshots.
+
+### Phase 2 — RTL event path and order book
+
+Implement:
+
+- `market_types_pkg.sv` and `fixed_point_pkg.sv`;
+- valid/ready parsing with stable inputs under backpressure;
+- a bounded finite-state machine for search, insert, shift, update, and remove;
+- explicit output/completion signaling;
+- simulation-only debug ports or accessors for all 20 levels; and
+- module-level and C++ differential tests.
+
+Recommended sequence:
+
+1. reset and one-event handshake;
+2. add at empty, best, middle, worst, and beyond depth;
+3. aggregation and update;
+4. partial/full cancel and trade;
+5. backpressure and consecutive events;
+6. long randomized differential testing.
+
+Acceptance:
+
+- bids remain strictly descending and asks strictly ascending;
+- no valid zero quantity or duplicate price remains;
+- all reset and backpressure cases pass;
+- the RTL matches the C++ book after every event; and
+- a deterministic 1,000,000-event run completes without divergence.
+
+On mismatch, save the seed, event index, recent event trace, book snapshots, and optional waveform command.
+
+### Phase 3 — RTL features, strategy, and parameters
+
+Implement features incrementally:
+
+1. spread;
+2. top-level imbalance;
+3. ten-level imbalance;
+4. microprice delta;
+5. order-flow imbalance;
+6. trade-flow imbalance;
+7. short-window volatility;
+8. constant bias.
+
+Then implement:
+
+- widened multiply-accumulate for the eight-weight score;
+- explicit rounding and saturation into Q16.16;
+- BUY/SELL/HOLD threshold comparisons;
+- active and shadow parameter banks; and
+- an atomic commit pulse with model/update counters.
+
+Acceptance:
+
+- every feature has directed edge-case vectors;
+- RTL values match the bit-accurate C++ reference or a documented tolerance;
+- action decisions match exactly, including boundary values;
+- overflow is deterministic; and
+- scoring never observes a partially written parameter set.
+
+### Phase 4 — Verilator runtime
+
+Implement an RAII `VerilatorRunner` that:
+
+- owns the DUT, reset, clock, and optional trace;
+- honors valid/ready without timing shortcuts;
+- waits with a bounded timeout for event completion;
+- queues feature outputs and records the latest signal;
+- provides test-only book snapshots; and
+- records cycle and wall-clock metrics.
+
+Integrate replay in this order:
+
+1. decode event;
+2. update the C++ reference;
+3. drive the RTL event;
+4. wait for completion;
+5. compare state, features, and signal;
+6. append the feature snapshot to the learning pipeline.
+
+Acceptance:
+
+- one command runs a complete deterministic replay;
+- trace output is optional and excluded from benchmarks;
+- timeout and divergence errors preserve a minimal reproduction; and
+- shutdown reports event count, cycles/event, throughput, and latency.
+
+### Phase 5 — OpenCL infrastructure and buffering
+
+Implement:
+
+- platform/device discovery with clear selection output;
+- RAII context, command queue, program, kernel, buffer, and event wrappers;
+- full compiler build-log reporting;
+- host buffers allocated with `CL_MEM_ALLOC_HOST_PTR`;
+- mapped double buffers with explicit states: `Free`, `Filling`, `Ready`, `InFlight`;
+- non-blocking transfers and event-driven buffer reuse; and
+- profiling only in benchmark mode.
+
+The producer may acquire only a `Free` buffer. A transfer changes `Ready` to `InFlight`; completion returns it to `Free`. Any illegal transition is a hard error.
+
+Acceptance:
+
+- a known sample kernel executes on the chosen device;
+- transfer ordering and buffer state tests pass;
+- an in-flight buffer cannot be overwritten; and
+- pageable/pinned and synchronous/asynchronous transfer benchmarks are recorded.
+
+### Phase 6 — Online learner and parameter synchronization
+
+Implement:
+
+- a pending queue containing feature vector, reference midpoint, and target event index;
+- delayed binary labels based on future midpoint movement;
+- a CPU floating-point logistic-regression oracle;
+- a numerically stable OpenCL sigmoid and mini-batch gradient update;
+- device-resident weights and compact loss/accuracy metrics;
+- configurable learning rate, L2 penalty, horizon, batch size, and seed; and
+- readback/commit every ten batches by default.
+
+Commit sequence:
+
+1. enqueue asynchronous weight readback;
+2. wait only when the scheduled readback must be consumed;
+3. reject non-finite values;
+4. convert and saturate all values to Q16.16;
+5. write the entire RTL shadow bank;
+6. pulse commit once;
+7. verify the version increment and record latency.
+
+Acceptance:
+
+- CPU and GPU predictions and one-batch updates agree within a stated tolerance;
+- labels preserve event order;
+- weights stay on the GPU between updates;
+- a valid commit changes the model version and subsequent RTL score; and
+- non-finite or partial updates never become active.
+
+### Phase 7 — WebSocket dashboard
+
+Implement:
+
+- a Boost.Beast server on a separate thread or asynchronous event loop;
+- static serving for native HTML/CSS/JavaScript;
+- immutable runtime snapshots serialized with `nlohmann/json`;
+- throttled publication at 10 Hz; and
+- panels for book depth, features, action/score, weights, loss/accuracy, and latency/throughput.
+
+Keep the processing thread non-blocking: it publishes the latest snapshot and never waits for a browser.
+
+Acceptance:
+
+- connect/reconnect/disconnect does not interrupt replay;
+- slow clients cannot create unbounded queues;
+- payload schema is documented and tested; and
+- benchmark results quantify dashboard-on versus dashboard-off overhead.
+
+### Phase 8 — Tests, benchmarks, documentation, and demo
+
+Automated suites:
+
+- C++ unit tests for protocol, book, fixed-point, features, strategy, labels, and configuration;
+- independent RTL module tests;
+- long randomized RTL/C++ differential tests;
+- OpenCL CPU/GPU equivalence and buffer-order tests;
+- integration tests for every boundary between components; and
+- a fixed-length end-to-end smoke test.
+
+Benchmark output:
+
+- write raw CSV with environment metadata, configuration, seed, and commit hash;
+- sweep batch sizes 256–4,096;
+- measure FPGA cycles/event, host throughput, transfer latency/bandwidth, kernel time, readback time, commit latency, and dashboard overhead; and
+- generate plots without replacing raw data.
+
+Documentation:
+
+- architecture and ownership;
+- canonical protocol and numerical semantics;
+- order-book operations and invariants;
+- OpenCL scheduling and buffer states;
+- dashboard schema;
+- build/troubleshooting guide;
+- limitations and honest interpretation of results; and
+- clean-clone demo instructions.
+
+Final acceptance:
+
+```bash
+./scripts/run_tests.sh
+./scripts/run_demo.sh
+./scripts/run_benchmark.sh
+```
+
+All three commands must be reproducible and fail loudly when a required capability is unavailable.
+
+## 6. Testing gates
+
+| Gate | Minimum evidence |
+|---|---|
+| Protocol | Round-trip CSV/binary tests and malformed-input tests |
+| Reference model | Directed cases plus deterministic randomized tests |
+| RTL book | Per-event comparison over 1,000,000 events |
+| RTL math | Directed fixed-point boundaries and differential vectors |
+| Signal | Exact decisions at, below, and above thresholds |
+| OpenCL | CPU/GPU prediction and one-update comparison |
+| Buffers | State-machine tests under delayed completion |
+| Model commit | Atomicity, versioning, finite-value rejection |
+| End-to-end | Fixed replay reaches expected final checksum and metrics |
+
+CI should run quick tests on every change. Long differential and benchmark jobs can run nightly or before release.
+
+## 7. Major risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| C++ and RTL semantics drift | Invalid differential results | Freeze a shared protocol/numerics document before RTL |
+| Fixed-point division/overflow errors | Incorrect features or signals | Widen intermediates, define rounding, test saturation boundaries |
+| RTL FSM complexity | Long debugging cycle | Build one operation at a time with state snapshots |
+| OpenCL platform variation | Build/runtime failures | Enumerate capabilities, print build logs, avoid vendor extensions initially |
+| GPU overhead dominates small model | Misleading performance claims | Benchmark honestly and present GPU as an extensible pipeline demo |
+| Async buffer race | Corrupt training samples | Explicit ownership states and event-dependent reuse |
+| Future-label leakage/order bugs | Invalid learning results | Event-indexed pending queue with deterministic oracle tests |
+| Dashboard perturbs throughput | Distorted benchmarks | Snapshot/throttle off-path and measure enabled/disabled |
+| Four-week schedule pressure | Integration shortcuts | Enforce milestone gates; reduce UI polish before correctness |
+
+## 8. Definition of done
+
+A phase is done only when:
+
+- implementation contains no silent placeholder behavior;
+- relevant unit and integration tests pass;
+- errors are explicit and actionable;
+- public interfaces and numerical behavior are documented;
+- build warnings introduced by the phase are resolved; and
+- the phase's acceptance command works from the documented environment.
+
+The project is done only when the end-to-end demo, full test suite, and benchmark script run from a clean checkout and the results clearly distinguish measured behavior from financial performance.
+
+## 9. Immediate next actions
+
+1. Install or expose Verilator and confirm the OpenCL platform sees the intended GPU.
+2. Create the Phase 0 repository skeleton and dependency report.
+3. Freeze the seven numerical/behavioral decisions listed in Phase 1.
+4. Implement the event protocol, Q16.16 helpers, and C++ book before starting RTL.
+5. Establish a deterministic final-state checksum so all later layers share one regression oracle.
+
