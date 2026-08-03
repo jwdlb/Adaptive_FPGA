@@ -67,6 +67,7 @@ add_library(market_engine_app    # Separates reusable application code from the 
     src/app/config.cpp
     src/app/opencl_devices.cpp
     src/market/event.cpp
+    src/market/order_book.cpp
 )
 
 # Add the include directory to this target and targets that link to it.
@@ -124,6 +125,7 @@ if(BUILD_TESTING)
     add_executable(market_engine_tests
         tests/cpp/config_tests.cpp
         tests/cpp/protocol_tests.cpp
+        tests/cpp/order_book_tests.cpp
     )
 
     # Link the tests with the application library and Catch2's supplied main().
@@ -132,6 +134,23 @@ if(BUILD_TESTING)
     # Load Catch2's CMake helpers and automatically discover the test cases.
     include(Catch)
     catch_discover_tests(market_engine_tests)
+endif()
+
+if(VERILATOR_EXECUTABLE)
+    add_custom_target(rtl_tests
+        COMMAND ${VERILATOR_EXECUTABLE}
+            --binary
+            --timing
+            --assert
+            --Wall
+            --top-module order_book_tb
+            --Mdir ${CMAKE_BINARY_DIR}/verilator_order_book_tb
+            ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/rtl/order_book.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/order_book_tb.sv
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Building and running standalone RTL order-book tests"
+    )
 endif()
 
 # Print a summary of the dependencies and optional capabilities found during

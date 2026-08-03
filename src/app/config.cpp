@@ -11,6 +11,8 @@
 namespace market_engine::app {
 namespace {
 
+//  This is a reusable helper function for reading a configuration value from JSON.
+// Generic function so can be used for any type T. It takes in a JSON object, the name of the value to read, and a reference to the variable to store the value in. If the value is present in the JSON object, it reads it and assigns it to the variable.
 template <typename T>
 void read_if_present(const nlohmann::json& json, const char* name, T& value) {
     if (json.contains(name)) {
@@ -18,6 +20,7 @@ void read_if_present(const nlohmann::json& json, const char* name, T& value) {
     }
 }
 
+// Declares a helper function that converts a command-line value into an unsigned 64-bit integer.
 [[nodiscard]] std::uint64_t parse_unsigned_option(std::string_view option, std::string_view value) {
     std::size_t consumed = 0;
     std::uint64_t result = 0;
@@ -32,6 +35,7 @@ void read_if_present(const nlohmann::json& json, const char* name, T& value) {
     return result;
 }
 
+//   This helper obtains the value that comes immediately after a command-line option.
 [[nodiscard]] const char* require_value(int& index, int argc, char* argv[], std::string_view option) {
     if (++index >= argc) {
         throw ConfigError("missing value for " + std::string(option));
@@ -41,6 +45,7 @@ void read_if_present(const nlohmann::json& json, const char* name, T& value) {
 
 }  // namespace
 
+// This function reads JSON configuration data, converts it into a Config object, validates it, and returns it.
 Config parse_config(std::istream& input) {
     nlohmann::json json;
     try {
@@ -79,6 +84,7 @@ Config parse_config(std::istream& input) {
     return config;
 }
 
+// This function loads a JSON configuration file from the specified path and returns a Config object. If the file cannot be opened, it throws a ConfigError.
 Config load_config(const std::filesystem::path& path) {
     std::ifstream input(path);
     if (!input) {
@@ -87,6 +93,7 @@ Config load_config(const std::filesystem::path& path) {
     return parse_config(input);
 }
 
+// This function checks that the configuration contains valid values.
 void validate_config(const Config& config) {
     if (config.order_book_depth != 10U) {
         throw ConfigError("orderBookDepth must be 10 in version 1");
@@ -130,16 +137,20 @@ std::string format_config(const Config& config) {
     return output.str();
 }
 
+// A function that reads the program’s command-line arguments and converts them into a RuntimeOptions object
 RuntimeOptions parse_command_line(int argc, char* argv[]) {
-    RuntimeOptions options;
+    RuntimeOptions options;     // Creates one RuntimeOptions object named options
+
+    // Basically just getting teh config path from the command line, if it is not there, it will use the default path in the RuntimeOptions struct
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--config") {
-            options.config_path = require_value(index, argc, argv, argument);
+            options.config_path = require_value(index, argc, argv, argument);   // If the argument is --config, it calls require_value to get the next argument as the config path
         }
     }
     options.config = load_config(options.config_path);
 
+    // Iterates through teh command line argumnets and sets the corresponding fields in the RuntimeOptions object based on the options provided. If an unknown option is encountered, it throws a ConfigError.
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--config") {
@@ -151,7 +162,7 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
         } else if (argument == "--seed") {
             options.config.random_seed = parse_unsigned_option(argument, require_value(index, argc, argv, argument));
         } else if (argument == "--batch-size") {
-            const auto value = parse_unsigned_option(argument, require_value(index, argc, argv, argument));
+            const uint64_t value = parse_unsigned_option(argument, require_value(index, argc, argv, argument));
             if (value > std::numeric_limits<std::uint32_t>::max()) {
                 throw ConfigError("--batch-size is too large");
             }
@@ -181,18 +192,19 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
     return options;
 }
 
+// This function returns a string containing the usage information for the program, including the command-line options and their descriptions.
 std::string usage(std::string_view executable_name) {
     return "Usage: " + std::string(executable_name) + " [options]\n"
            "  --config PATH              Configuration JSON (default: config/default.json)\n"
-           "  --input PATH               Market-event input (future phase)\n"
-           "  --events N                 Replay limit (future phase)\n"
+           "  --input PATH               CSV or MKT1 binary market-event input\n"
+           "  --events N                 Replay only the first N events\n"
            "  --seed N                   Override random seed\n"
            "  --batch-size N             Override GPU batch size\n"
            "  --reference-only           Disable RTL/GPU runtime paths\n"
            "  --no-gpu                   Disable GPU runtime path\n"
            "  --no-dashboard             Disable dashboard runtime path\n"
            "  --trace                    Request RTL tracing (future phase)\n"
-           "  --benchmark                Enable benchmark mode (future phase)\n"
+           "  --benchmark                Reserved for a future benchmark mode\n"
            "  --list-opencl-devices      Print detected OpenCL devices\n"
            "  --version                  Print program version\n"
            "  --help, -h                 Print this help\n";

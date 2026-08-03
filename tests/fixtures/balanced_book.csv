@@ -1,0 +1,4 @@
+timestamp_ns,event_type,side,price_ticks,quantity
+1000,Add,Bid,10000,100
+1010,Add,Ask,10002,100
+1020,Trade,Ask,10002,25

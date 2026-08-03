@@ -159,7 +159,8 @@ std::vector<MarketEvent> read_binary(std::istream& input) {
         const auto timestamp = read_le<std::uint64_t>(input, 8, "timestamp");
         const int type = input.get(); const int side = input.get();
         if (type == std::char_traits<char>::eof() || side == std::char_traits<char>::eof()) throw EventCodecError("truncated binary event");
-        static_cast<void>(read_le<std::uint16_t>(input, 2, "reserved"));
+        const auto reserved = read_le<std::uint16_t>(input, 2, "reserved");
+        if (reserved != 0U) throw EventCodecError("binary event " + std::to_string(index) + " has non-zero reserved bytes");
         const auto price_bits = read_le<std::uint32_t>(input, 4, "price");
         const MarketEvent event{timestamp, static_cast<EventType>(static_cast<std::uint8_t>(type)), static_cast<Side>(static_cast<std::uint8_t>(side)), static_cast<std::int32_t>(price_bits), read_le<std::uint32_t>(input, 4, "quantity")};
         require_valid(event, "binary event " + std::to_string(index));

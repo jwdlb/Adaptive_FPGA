@@ -6,9 +6,10 @@ learning, and browser observability.
 
 ## Current status
 
-Phase 0 is implemented: CMake, dependency/capability checks, configuration,
-CLI, tests, scripts, and CI. The order book, RTL, GPU learner, and dashboard
-are planned but not implemented yet.
+The C++ reference path is implemented: protocol codecs, fixed-point arithmetic,
+a ten-level order book, feature calculation, strategy evaluation, replay
+metrics, deterministic fixtures, and a seeded event generator. RTL, GPU
+learning, and the dashboard remain planned.
 
 ## Prerequisites
 
@@ -32,6 +33,13 @@ first configure.
 ./build/market_engine_demo --list-opencl-devices
 ```
 
-The application currently validates and displays its effective configuration;
-it does not yet replay events or run RTL/GPU processing.
+Generate a deterministic stream and replay it through the C++ reference:
 
+```bash
+python3 python/generate_events.py --output data/events.csv --seed 42 --events 1000000
+./build/market_engine_demo --reference-only --input data/events.csv
+```
+
+Use `--events N` to replay only the first `N` records. On an order-book replay
+failure, the demo writes `failure_repro.csv` containing the failing event and
+up to 100 preceding events. RTL/GPU processing is not implemented yet.

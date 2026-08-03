@@ -72,6 +72,10 @@ TEST_CASE("binary codec is versioned and round trips") {
     bad_version[4] = static_cast<char>(2);
     std::istringstream unsupported(bad_version, std::ios::binary);
     REQUIRE_THROWS_AS(market_engine::market::read_binary(unsupported), EventCodecError);
+    std::string non_zero_reserved = bytes;
+    non_zero_reserved[26] = static_cast<char>(1);  // First record's little-endian reserved field.
+    std::istringstream invalid_reserved(non_zero_reserved, std::ios::binary);
+    REQUIRE_THROWS_AS(market_engine::market::read_binary(invalid_reserved), EventCodecError);
     std::istringstream trailing(bytes + "x", std::ios::binary);
     REQUIRE_THROWS_AS(market_engine::market::read_binary(trailing), EventCodecError);
 }
