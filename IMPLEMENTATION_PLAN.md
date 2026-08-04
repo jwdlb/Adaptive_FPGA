@@ -69,9 +69,10 @@ Check: scripts work when called outside the repository root.
 
 ### 0.7 Add JSON configuration
 
-Add the default configuration: depth 10, 10 ns clock, 64-event window, batch
-1,024, label horizon 100, learning rate 0.001, L2 0.0001, commit interval 10,
-dashboard port 8080/rate 10 Hz, and seed 42.
+Add the default configuration: depth 10, 10 ns clock, 64-event feature window,
+32-event CNN sequence, 16 CNN channels, kernel size 3, batch 1,024, label
+horizon 100, learning rate 0.001, L2 0.0001, one GPU-generated parameter update
+per completed batch, dashboard port 8080/rate 10 Hz, and seed 42.
 
 Check: demo parses and prints the effective configuration.
 
@@ -466,8 +467,9 @@ Check: vector copy GPU output matches host data.
 
 ### 6.5 Define batch memory layout
 
-Use eight contiguous feature columns plus labels and document element/alignment
-rules.
+Use contiguous `[sample][time][feature]` storage for 32 x 8 feature sequences,
+the current eight-feature vector used by the FPGA scorer, and labels. Document
+element order, alignment, and the absence of future data.
 
 Check: host packing test verifies positions and ordering.
 
@@ -499,11 +501,13 @@ Check: delayed completion cannot cause buffer overwrite.
 
 **Gate:** portable OpenCL transfers are safe and asynchronous.
 
-## Phase 7 — Online learning and parameter updates
+## Phase 7 — Temporal CNN learning and parameter updates
 
 ### 7.1 Implement the pending-label queue
 
-Store valid feature, reference midpoint, and target event index.
+Maintain a 32-entry valid-feature sequence ring. Store each complete sequence,
+its current eight-feature vector, reference midpoint, and target event index.
+Reset sequence collection whenever features are invalid.
 
 Check: label cannot be produced before horizon expiry.
 
@@ -513,18 +517,23 @@ Future midpoint rise is label 1; fall is 0; ties/invalid states are omitted.
 
 Check: rise, fall, tie, empty book, and horizon boundary tests.
 
-### 7.3 Implement CPU logistic-regression oracle
+### 7.3 Implement CPU temporal-CNN oracle
 
-Add stable sigmoid, deterministic initialization, mini-batch gradient, L2,
-loss, and accuracy.
+Implement deterministic forward and backward propagation for
+`Conv1D(16, k=3) -> ReLU -> Conv1D(16, k=3) -> ReLU -> global average pool ->
+9 outputs`. Treat the nine outputs as bounded eight-weight and one-bias
+adjustments, add them to the stable FPGA base model, then calculate sigmoid,
+binary-cross-entropy loss, mini-batch gradient, L2, and accuracy.
 
-Check: hand-worked single/batch vectors.
+Check: hand-worked convolution, ReLU, pooling, generated-weight, and batch vectors.
 
 ### 7.4 Implement GPU prediction/update kernels
 
-Keep weights device-resident; calculate batch update and compact metrics.
+Keep CNN parameters device-resident. Implement forward, backward, update, and
+latest-sequence inference kernels; calculate compact loss/accuracy metrics.
 
-Check: CPU/GPU prediction and one-update agreement within documented tolerance.
+Check: CPU/GPU generated values, prediction, gradient, and one-update agreement
+within documented tolerance.
 
 ### 7.5 Fill and submit labelled batches
 
@@ -540,32 +549,36 @@ Check: timing instrumentation contains no steady-state global wait.
 
 ### 7.7 Schedule GPU weight readback
 
-After every ten completed batches, enqueue a readback tied to batch sequence.
+After every completed training batch, run inference on the latest valid sequence
+and enqueue a nine-value readback tied to the batch sequence.
 
 Check: no early or duplicate readbacks.
 
-### 7.8 Validate and convert weights
+### 7.8 Validate and convert generated adjustments
 
-Reject NaN/infinity; convert all weights/thresholds to saturated Q16.16 and
-record saturation count.
+Reject NaN/infinity. Clamp eight generated weight adjustments and one bias
+adjustment to documented bounds, convert them to saturated Q16.16, and record
+clamp/saturation counts. Keep FPGA action thresholds fixed in this version.
 
 Check: injected invalid value never reaches RTL.
 
 ### 7.9 Write shadow bank then commit
 
-Write every parameter field, verify completeness, pulse commit at an event
-boundary, then verify version increment.
+Write all eight weight-adjustment fields and the bias-adjustment field, verify
+completeness, pulse commit at an event boundary, then verify version increment.
 
 Check: no signal contains a mixed model.
 
 ### 7.10 Add end-to-end adaptive test
 
-Use deterministic data for two batches and one commit; assert model version
-and a following RTL score change.
+Use deterministic data for two batches and one generated-parameter commit; assert
+model version, bounded conversion, and a following RTL score change. Compare
+against the ordinary regression baseline as a reported experiment.
 
 Check: GPU test skips explicitly on hosts without supported GPU.
 
-**Gate:** validated GPU learning changes FPGA-model behavior only atomically.
+**Gate:** validated GPU CNN learning changes FPGA-model behavior only atomically,
+while the FPGA continues event processing without waiting for GPU work.
 
 ## Phase 8 — Dashboard
 

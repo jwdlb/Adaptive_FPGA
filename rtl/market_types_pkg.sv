@@ -4,6 +4,8 @@ package market_types_pkg;
 
   // compile-time configurable constant
   parameter int unsigned BOOK_DEPTH = 10;
+  parameter int unsigned FEATURE_COUNT = 8;
+  parameter int unsigned FEATURE_WINDOW_SIZE = 64;
 
   // creates a type 'event_type_t' that can hold one of the four named event values.
   // - typedef creates a resuable type alias (i.e. it gives a name to this type, event_type_t)
@@ -23,6 +25,14 @@ package market_types_pkg;
     SIDE_BID = 1'b0,
     SIDE_ASK = 1'b1
   } side_t;
+
+  // creates a type 'action_t' that can hold one of the three named action values.
+  // - Is used to indicate the action to take based on the feature engine's output.
+  typedef enum logic [1:0] {
+    ACTION_HOLD = 2'd0,
+    ACTION_BUY  = 2'd1,
+    ACTION_SELL = 2'd2
+  }   action_t;
 
   // creates a type 'book_error_t' that can hold one of the five named error values.
   typedef enum logic [2:0] {

@@ -8,8 +8,9 @@ Build a reproducible research prototype in which:
 
 - C++ replays decoded market events and coordinates all components.
 - A cycle-accurate Verilated SystemVerilog model owns the order book, feature calculation, and BUY/SELL/HOLD decision.
-- An OpenCL GPU learner trains an eight-feature online logistic-regression model in batches.
-- Model parameters are committed atomically back into the RTL model.
+- An OpenCL GPU learner runs a small temporal CNN that generates bounded updates
+  for the FPGA's eight feature weights and bias from recent feature history.
+- Complete generated parameter sets are committed atomically back into the RTL model.
 - A browser dashboard observes runtime state without entering the critical processing path.
 
 This is a heterogeneous-computing demonstration, not a live trading or execution system.
@@ -30,9 +31,13 @@ The version is complete when one command can:
 
 ### Scope boundaries
 
-Version 1 includes one instrument, aggregated price levels, four event types, eight features, a linear signal model, OpenCL learning, and simulation-only FPGA execution.
+Version 1 includes one instrument, aggregated price levels, four event types,
+eight features, a low-latency linear FPGA signal model, a small OpenCL temporal
+CNN weight generator, and simulation-only FPGA execution.
 
-It excludes exchange-native protocols, order-ID/FIFO matching, live data, execution, multiple instruments, physical FPGA deployment, direct FPGA–GPU DMA, and complex machine-learning models.
+It excludes exchange-native protocols, order-ID/FIFO matching, live data,
+execution, multiple instruments, physical FPGA deployment, direct FPGA–GPU DMA,
+and FPGA implementation of CNN inference.
 
 ## 2. Architecture and component ownership
 
@@ -45,11 +50,11 @@ C++ runtime and reference model
         | valid/ready event interface
         v
 Verilated FPGA model
-  parser -> 10x10 book -> features -> score/signal
-       ^                         |
-       | atomic parameters       | feature samples
-       |                         v
-       +--- OpenCL learner <- pinned double buffers
+  parser -> 10x10 book -> features -> linear score/signal
+       ^                                |
+       | atomic weight/bias updates     | valid feature snapshots
+       |                                v
+       +--- OpenCL temporal CNN <- C++ sequence builder <- pinned double buffers
 
 C++ immutable snapshots -> WebSocket server -> browser
 ```
@@ -58,8 +63,10 @@ Ownership rules:
 
 - RTL is authoritative for simulated market state and signals.
 - The C++ reference model is the correctness oracle during development and testing.
-- C++ owns replay, delayed-label construction, buffer scheduling, configuration, metrics, and error handling.
-- OpenCL owns batched model updates while weights remain device-resident.
+- C++ owns replay, valid-sequence and delayed-label construction, buffer scheduling,
+  configuration, metrics, and error handling.
+- OpenCL owns batched CNN training/inference and produces bounded weight/bias
+  adjustments; the FPGA never waits for it.
 - The dashboard receives snapshots only; it cannot modify the processing pipeline.
 
 ## 3. Milestones
@@ -287,35 +294,43 @@ Acceptance:
 - an in-flight buffer cannot be overwritten; and
 - pageable/pinned and synchronous/asynchronous transfer benchmarks are recorded.
 
-### Phase 6 — Online learner and parameter synchronization
+### Phase 6 — Temporal CNN learner and parameter synchronization
 
 Implement:
 
-- a pending queue containing feature vector, reference midpoint, and target event index;
+- a valid 32-event feature-sequence ring and pending queue containing the sequence,
+  current feature vector, reference midpoint, and target event index;
 - delayed binary labels based on future midpoint movement;
-- a CPU floating-point logistic-regression oracle;
-- a numerically stable OpenCL sigmoid and mini-batch gradient update;
-- device-resident weights and compact loss/accuracy metrics;
-- configurable learning rate, L2 penalty, horizon, batch size, and seed; and
-- readback/commit every ten batches by default.
+- a CPU floating-point oracle for a causal CNN weight generator;
+- OpenCL forward, backward, and mini-batch update kernels for a
+  `32x8 -> Conv1D(16, k=3) -> ReLU -> Conv1D(16, k=3) -> ReLU -> pool -> 9`
+  model;
+- device-resident CNN parameters and compact loss/accuracy metrics;
+- configurable learning rate, L2 penalty, horizon, sequence length, batch size,
+  update cadence, and seed; and
+- generation/readback of eight bounded weight adjustments and one bounded bias
+  adjustment after each completed GPU update.
 
 Commit sequence:
 
-1. enqueue asynchronous weight readback;
+1. run CNN inference for the newest complete sequence and enqueue asynchronous
+   readback of its nine generated values;
 2. wait only when the scheduled readback must be consumed;
 3. reject non-finite values;
-4. convert and saturate all values to Q16.16;
-5. write the entire RTL shadow bank;
+4. clamp the generated adjustments to their documented range, then convert and
+   saturate them to Q16.16;
+5. write the eight weight-adjustment fields and bias-adjustment field to the RTL
+   shadow bank;
 6. pulse commit once;
 7. verify the version increment and record latency.
 
 Acceptance:
 
-- CPU and GPU predictions and one-batch updates agree within a stated tolerance;
-- labels preserve event order;
-- weights stay on the GPU between updates;
+- CPU and GPU CNN outputs, losses, and one-batch updates agree within a stated tolerance;
+- sequences and labels preserve event order, omit invalid periods, and contain no future data;
+- CNN parameters stay on the GPU between updates;
 - a valid commit changes the model version and subsequent RTL score; and
-- non-finite or partial updates never become active.
+- non-finite, out-of-range, or partial updates never become active.
 
 ### Phase 7 — WebSocket dashboard
 
@@ -384,7 +399,7 @@ All three commands must be reproducible and fail loudly when a required capabili
 | RTL book | Per-event comparison over 1,000,000 events |
 | RTL math | Directed fixed-point boundaries and differential vectors |
 | Signal | Exact decisions at, below, and above thresholds |
-| OpenCL | CPU/GPU prediction and one-update comparison |
+| OpenCL | CPU/GPU CNN output, gradient, and one-update comparison |
 | Buffers | State-machine tests under delayed completion |
 | Model commit | Atomicity, versioning, finite-value rejection |
 | End-to-end | Fixed replay reaches expected final checksum and metrics |
@@ -399,7 +414,7 @@ CI should run quick tests on every change. Long differential and benchmark jobs 
 | Fixed-point division/overflow errors | Incorrect features or signals | Widen intermediates, define rounding, test saturation boundaries |
 | RTL FSM complexity | Long debugging cycle | Build one operation at a time with state snapshots |
 | OpenCL platform variation | Build/runtime failures | Enumerate capabilities, print build logs, avoid vendor extensions initially |
-| GPU overhead dominates small model | Misleading performance claims | Benchmark honestly and present GPU as an extensible pipeline demo |
+| GPU overhead dominates the small CNN | Misleading performance claims | Benchmark honestly, report asynchronous end-to-end latency, and compare against the regression baseline |
 | Async buffer race | Corrupt training samples | Explicit ownership states and event-dependent reuse |
 | Future-label leakage/order bugs | Invalid learning results | Event-indexed pending queue with deterministic oracle tests |
 | Dashboard perturbs throughput | Distorted benchmarks | Snapshot/throttle off-path and measure enabled/disabled |
@@ -425,4 +440,3 @@ The project is done only when the end-to-end demo, full test suite, and benchmar
 3. Freeze the seven numerical/behavioral decisions listed in Phase 1.
 4. Implement the event protocol, Q16.16 helpers, and C++ book before starting RTL.
 5. Establish a deterministic final-state checksum so all later layers share one regression oracle.
-

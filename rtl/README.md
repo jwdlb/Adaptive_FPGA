@@ -1,4 +1,4 @@
-# Phase 4 RTL starter
+# RTL order book and signal path
 
 Compile the package before the module:
 

@@ -137,6 +137,16 @@ if(BUILD_TESTING)
 endif()
 
 if(VERILATOR_EXECUTABLE)
+    set(RTL_COMMON_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/fixed_point_pkg.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/order_book.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_window.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_engine.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/strategy_model.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_pipeline.sv
+    )
+
     add_custom_target(rtl_tests
         COMMAND ${VERILATOR_EXECUTABLE}
             --binary
@@ -151,6 +161,35 @@ if(VERILATOR_EXECUTABLE)
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Building and running standalone RTL order-book tests"
     )
+
+    add_custom_target(rtl_phase5_tests
+        COMMAND ${VERILATOR_EXECUTABLE}
+            --binary --timing --assert -Wno-fatal
+            --top-module fixed_point_pkg_tb
+            --Mdir ${CMAKE_BINARY_DIR}/verilator_fixed_point_pkg_tb
+            ${CMAKE_CURRENT_SOURCE_DIR}/rtl/fixed_point_pkg.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/fixed_point_pkg_tb.sv
+        COMMAND ${CMAKE_BINARY_DIR}/verilator_fixed_point_pkg_tb/Vfixed_point_pkg_tb
+        COMMAND ${VERILATOR_EXECUTABLE}
+            --binary --timing --assert -Wno-fatal
+            --top-module feature_window_tb
+            --Mdir ${CMAKE_BINARY_DIR}/verilator_feature_window_tb
+            ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_window.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/feature_window_tb.sv
+        COMMAND ${CMAKE_BINARY_DIR}/verilator_feature_window_tb/Vfeature_window_tb
+        COMMAND ${VERILATOR_EXECUTABLE}
+            --binary --timing --assert -Wno-fatal
+            --top-module market_pipeline_tb
+            --Mdir ${CMAKE_BINARY_DIR}/verilator_market_pipeline_tb
+            ${RTL_COMMON_SOURCES}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/market_pipeline_tb.sv
+        COMMAND ${CMAKE_BINARY_DIR}/verilator_market_pipeline_tb/Vmarket_pipeline_tb
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Building and running Phase 5 RTL signal-path tests"
+    )
+
+    add_custom_target(rtl_pipeline_demo DEPENDS rtl_phase5_tests)
 endif()
 
 # Print a summary of the dependencies and optional capabilities found during
