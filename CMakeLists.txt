@@ -66,8 +66,11 @@ FetchContent_MakeAvailable(nlohmann_json Catch2)
 add_library(market_engine_app    # Separates reusable application code from the executable entry point.
     src/app/config.cpp
     src/app/opencl_devices.cpp
+    src/app/replay_coordinator.cpp
+    src/io/event_reader.cpp
     src/market/event.cpp
     src/market/order_book.cpp
+    src/reference/reference_model.cpp
 )
 
 # Add the include directory to this target and targets that link to it.
@@ -126,6 +129,7 @@ if(BUILD_TESTING)
         tests/cpp/config_tests.cpp
         tests/cpp/protocol_tests.cpp
         tests/cpp/order_book_tests.cpp
+        tests/cpp/reference_model_tests.cpp
     )
 
     # Link the tests with the application library and Catch2's supplied main().

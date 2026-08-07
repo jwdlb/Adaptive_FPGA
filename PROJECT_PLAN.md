@@ -8,8 +8,10 @@ Build a reproducible research prototype in which:
 
 - C++ replays decoded market events and coordinates all components.
 - A cycle-accurate Verilated SystemVerilog model owns the order book, feature calculation, and BUY/SELL/HOLD decision.
-- An OpenCL GPU learner runs a small temporal CNN that generates bounded updates
-  for the FPGA's eight feature weights and bias from recent feature history.
+- An OpenCL GPU learner, selected independently of the surrounding runtime,
+  generates bounded updates for the FPGA's eight feature weights and bias from
+  recent feature history. The first learner may be ordinary regression; a CNN
+  is an optional future implementation of the same interface.
 - Complete generated parameter sets are committed atomically back into the RTL model.
 - A browser dashboard observes runtime state without entering the critical processing path.
 
@@ -32,12 +34,13 @@ The version is complete when one command can:
 ### Scope boundaries
 
 Version 1 includes one instrument, aggregated price levels, four event types,
-eight features, a low-latency linear FPGA signal model, a small OpenCL temporal
-CNN weight generator, and simulation-only FPGA execution.
+eight features, a low-latency linear FPGA signal model, a pluggable OpenCL learner
+with ordinary regression as the initial implementation, and simulation-only FPGA
+execution.
 
 It excludes exchange-native protocols, order-ID/FIFO matching, live data,
 execution, multiple instruments, physical FPGA deployment, direct FPGA–GPU DMA,
-and FPGA implementation of CNN inference.
+and FPGA implementation of GPU-model inference.
 
 ## 2. Architecture and component ownership
 
@@ -45,16 +48,14 @@ and FPGA implementation of CNN inference.
 Event file/generator
         |
         v
-C++ runtime and reference model
-        |
-        | valid/ready event interface
-        v
-Verilated FPGA model
-  parser -> 10x10 book -> features -> linear score/signal
-       ^                                |
-       | atomic weight/bias updates     | valid feature snapshots
-       |                                v
-       +--- OpenCL temporal CNN <- C++ sequence builder <- pinned double buffers
+EventReader -> ReplayCoordinator -> VerilatorRunner -> Verilated FPGA model
+                                  parser -> 10x10 book -> features -> score/signal
+                                         |                    |
+                              atomic ModelUpdate              | one valid 8-feature snapshot
+                                         ^                    v
+                         GpuModel <- GPU batches <- coordinator sequence builder
+                                         |
+                                  pluggable GPU learner
 
 C++ immutable snapshots -> WebSocket server -> browser
 ```
@@ -64,10 +65,68 @@ Ownership rules:
 - RTL is authoritative for simulated market state and signals.
 - The C++ reference model is the correctness oracle during development and testing.
 - C++ owns replay, valid-sequence and delayed-label construction, buffer scheduling,
-  configuration, metrics, and error handling.
-- OpenCL owns batched CNN training/inference and produces bounded weight/bias
-  adjustments; the FPGA never waits for it.
+  configuration, metrics, error handling, and the safe hand-off between GPU and RTL.
+- `ReplayCoordinator` is the only coordinator between the GPU and RTL. The GPU and
+  Verilog do not communicate directly.
+- OpenCL owns batched training/inference for a replaceable learner and produces a
+  complete bounded `ModelUpdate`; the FPGA never waits for it.
 - The dashboard receives snapshots only; it cannot modify the processing pipeline.
+
+### Target source layout
+
+The following layout makes the coordinator and component boundaries explicit. Existing
+code is moved into these roles without changing its verified market semantics.
+
+```text
+Adaptive_FPGA/
+├── src/
+│   ├── main.cpp
+│   ├── app/
+│   │   ├── config.cpp
+│   │   ├── replay_coordinator.cpp
+│   │   └── opencl_devices.cpp
+│   ├── io/
+│   │   └── event_reader.cpp
+│   ├── reference/
+│   │   └── reference_model.cpp
+│   ├── verilator/
+│   │   └── verilator_runner.cpp
+│   ├── gpu/
+│   │   └── gpu_model.cpp
+│   └── market/
+│       ├── event.cpp
+│       └── order_book.cpp
+├── include/
+│   ├── app/
+│   │   ├── config.hpp
+│   │   └── replay_coordinator.hpp
+│   ├── io/
+│   │   └── event_reader.hpp
+│   ├── reference/
+│   │   └── reference_model.hpp
+│   ├── verilator/
+│   │   └── verilator_runner.hpp
+│   ├── gpu/
+│   │   └── gpu_model.hpp
+│   └── market/
+│       ├── event.hpp
+│       ├── fixed_point.hpp
+│       └── order_book.hpp
+├── rtl/           synthesizable hardware description
+├── tb/            Verilog-only test benches
+├── tests/
+│   ├── cpp/       protocol, book, reference-model, and Verilator-runner tests
+│   └── fixtures/
+├── config/
+├── docs/
+├── scripts/
+└── python/
+```
+
+`main.cpp` chooses a mode and starts the replay. `EventReader` loads events.
+`ReferenceModel` is the optional C++ answer key. `VerilatorRunner` controls the
+simulated RTL. `ReplayCoordinator` alone routes snapshots to `GpuModel` and routes
+the newest validated complete `ModelUpdate` back to the RTL shadow bank.
 
 ## 3. Milestones
 
@@ -78,8 +137,8 @@ Ownership rules:
 | M2: RTL order book | Parser and bounded 10-level book | 1,000,000-event differential test passes |
 | M3: RTL signal path | Fixed-point features, strategy, parameter banks | Features agree within tolerance; actions agree exactly |
 | M4: Runtime | Full replay through Verilator | One-command replay completes and reports metrics |
-| M5: GPU data path | Safe asynchronous pinned double buffering | Transfer tests pass with no buffer ownership violation |
-| M6: Adaptive loop | Delayed labels, GPU training, RTL commits | CPU/GPU agree; model version and score update correctly |
+| M5: GPU/RTL contract | Safe asynchronous batches and atomic update hand-off | Contract and buffer tests pass with no ownership violation |
+| M6: Adaptive loop | A pluggable GPU learner, labels, and RTL commits | Chosen CPU/GPU model agrees; model version and score update correctly |
 | M7: Observability | WebSocket dashboard | Disconnect-safe 10 Hz updates with measured overhead |
 | M8: Release candidate | Tests, benchmarks, docs, demo package | Clean-clone reproducibility and final demo pass |
 
@@ -273,17 +332,29 @@ Acceptance:
 - timeout and divergence errors preserve a minimal reproduction; and
 - shutdown reports event count, cycles/event, throughput, and latency.
 
-### Phase 5 — OpenCL infrastructure and buffering
+### Phase 6 — GPU/RTL integration contract and buffering
 
 Implement:
 
+- the `EventReader`, `ReferenceModel`, `VerilatorRunner`, `ReplayCoordinator`, and
+  `GpuModel` ownership boundaries described below; keep the reference model optional
+  at runtime but available for differential checking;
 - platform/device discovery with clear selection output;
 - RAII context, command queue, program, kernel, buffer, and event wrappers;
 - full compiler build-log reporting;
-- host buffers allocated with `CL_MEM_ALLOC_HOST_PTR`;
+- a versioned GPU input contract: one valid RTL feature snapshot is eight Q16.16
+  values plus event metadata; the coordinator owns the 32-snapshot sequence ring and
+  packs contiguous `[sample][time][feature]` batches;
+- a versioned GPU output contract: one complete `ModelUpdate` contains exactly eight
+  bounded weight adjustments, one bounded bias adjustment, a monotonically increasing
+  version, and a completion marker;
+- host buffers allocated with `CL_MEM_ALLOC_HOST_PTR`, including a latest-result
+  mailbox for completed `ModelUpdate` packets;
 - mapped double buffers with explicit states: `Free`, `Filling`, `Ready`, `InFlight`;
 - non-blocking transfers and event-driven buffer reuse; and
-- profiling only in benchmark mode.
+- profiling only in benchmark mode;
+- a coordinator-to-RTL hand-off that validates a complete newest `ModelUpdate`, writes
+  all nine fields to the shadow bank, and issues one commit only at an event boundary.
 
 The producer may acquire only a `Free` buffer. A transfer changes `Ready` to `InFlight`; completion returns it to `Free`. Any illegal transition is a hard error.
 
@@ -292,29 +363,35 @@ Acceptance:
 - a known sample kernel executes on the chosen device;
 - transfer ordering and buffer state tests pass;
 - an in-flight buffer cannot be overwritten; and
+- a test update traverses GPU result mailbox -> coordinator -> RTL shadow bank ->
+  atomic commit without a mixed parameter set; and
 - pageable/pinned and synchronous/asynchronous transfer benchmarks are recorded.
 
-### Phase 6 — Temporal CNN learner and parameter synchronization
+### Phase 7 — Pluggable GPU learner and parameter synchronization
 
 Implement:
 
 - a valid 32-event feature-sequence ring and pending queue containing the sequence,
   current feature vector, reference midpoint, and target event index;
 - delayed binary labels based on future midpoint movement;
-- a CPU floating-point oracle for a causal CNN weight generator;
-- OpenCL forward, backward, and mini-batch update kernels for a
-  `32x8 -> Conv1D(16, k=3) -> ReLU -> Conv1D(16, k=3) -> ReLU -> pool -> 9`
-  model;
-- device-resident CNN parameters and compact loss/accuracy metrics;
+- a CPU floating-point oracle for the selected learner;
+- OpenCL kernels for the selected learner, initially ordinary linear or logistic
+  regression unless another learner is explicitly chosen;
+- a model-independent `GpuModel` interface: it consumes the Phase 5 input contract
+  and returns only the Phase 6 `ModelUpdate` contract;
+- device-resident learner parameters and compact loss/accuracy metrics;
 - configurable learning rate, L2 penalty, horizon, sequence length, batch size,
   update cadence, and seed; and
-- generation/readback of eight bounded weight adjustments and one bounded bias
-  adjustment after each completed GPU update.
+- generation/readback of one complete `ModelUpdate` after each completed GPU update.
+
+A larger learner (for example a temporal CNN) is a later interchangeable implementation:
+it must use the same input batch and `ModelUpdate` output contract, so it does not
+change the RTL or coordinator hand-off.
 
 Commit sequence:
 
-1. run CNN inference for the newest complete sequence and enqueue asynchronous
-   readback of its nine generated values;
+1. run inference for the newest complete sequence and enqueue asynchronous readback
+   of one `ModelUpdate` packet;
 2. wait only when the scheduled readback must be consumed;
 3. reject non-finite values;
 4. clamp the generated adjustments to their documented range, then convert and
@@ -326,13 +403,14 @@ Commit sequence:
 
 Acceptance:
 
-- CPU and GPU CNN outputs, losses, and one-batch updates agree within a stated tolerance;
+- CPU and GPU outputs, losses, and one-batch updates for the selected learner agree
+  within a stated tolerance;
 - sequences and labels preserve event order, omit invalid periods, and contain no future data;
-- CNN parameters stay on the GPU between updates;
+- learner parameters stay on the GPU between updates;
 - a valid commit changes the model version and subsequent RTL score; and
 - non-finite, out-of-range, or partial updates never become active.
 
-### Phase 7 — WebSocket dashboard
+### Phase 8 — WebSocket dashboard
 
 Implement:
 
@@ -351,7 +429,7 @@ Acceptance:
 - payload schema is documented and tested; and
 - benchmark results quantify dashboard-on versus dashboard-off overhead.
 
-### Phase 8 — Tests, benchmarks, documentation, and demo
+### Phase 9 — Tests, benchmarks, documentation, and demo
 
 Automated suites:
 
@@ -399,7 +477,7 @@ All three commands must be reproducible and fail loudly when a required capabili
 | RTL book | Per-event comparison over 1,000,000 events |
 | RTL math | Directed fixed-point boundaries and differential vectors |
 | Signal | Exact decisions at, below, and above thresholds |
-| OpenCL | CPU/GPU CNN output, gradient, and one-update comparison |
+| OpenCL | CPU/GPU selected-model output, gradient, and one-update comparison |
 | Buffers | State-machine tests under delayed completion |
 | Model commit | Atomicity, versioning, finite-value rejection |
 | End-to-end | Fixed replay reaches expected final checksum and metrics |
@@ -414,7 +492,7 @@ CI should run quick tests on every change. Long differential and benchmark jobs 
 | Fixed-point division/overflow errors | Incorrect features or signals | Widen intermediates, define rounding, test saturation boundaries |
 | RTL FSM complexity | Long debugging cycle | Build one operation at a time with state snapshots |
 | OpenCL platform variation | Build/runtime failures | Enumerate capabilities, print build logs, avoid vendor extensions initially |
-| GPU overhead dominates the small CNN | Misleading performance claims | Benchmark honestly, report asynchronous end-to-end latency, and compare against the regression baseline |
+| GPU overhead dominates the small learner | Misleading performance claims | Benchmark honestly, report asynchronous end-to-end latency, and compare against the CPU regression baseline |
 | Async buffer race | Corrupt training samples | Explicit ownership states and event-dependent reuse |
 | Future-label leakage/order bugs | Invalid learning results | Event-indexed pending queue with deterministic oracle tests |
 | Dashboard perturbs throughput | Distorted benchmarks | Snapshot/throttle off-path and measure enabled/disabled |

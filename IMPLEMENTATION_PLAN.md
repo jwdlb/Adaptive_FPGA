@@ -15,6 +15,12 @@ combine a later phase with an unfinished correctness gate.
 - Never add GPU/dashboard performance work before C++/RTL agreement is proven.
 - Optional capability failures are explicit; requesting GPU never falls back to
   CPU without the user selecting a no-GPU/reference-only mode.
+- `ReplayCoordinator` is the only GPU/RTL bridge. Verilog never calls GPU software,
+  and the GPU never writes RTL state directly.
+- The GPU boundary is model-independent: valid RTL snapshots enter as eight Q16.16
+  features plus metadata, and every learner returns one complete nine-value
+  `ModelUpdate` (eight weight adjustments and one bias adjustment) plus version and
+  completion state.
 
 ## Phase 0 — Bootstrap
 
@@ -28,8 +34,9 @@ Check: every command produces a clear version or capability result.
 ### 0.2 Create the layout and ignore rules
 
 Add `config`, `data`, `docs`, `include`, `src`, `rtl`, `kernels`, `tests`,
-`python`, `scripts`, and `web`; ignore build output, waveforms, generated data,
-and benchmark output.
+`python`, `scripts`, and `web`; reserve `src/include` component pairs for `app`,
+`io`, `reference`, `verilator`, `gpu`, and `market`. Ignore build output, waveforms,
+generated data, and benchmark output.
 
 Check: `git status` contains no generated files after a build.
 
@@ -70,9 +77,10 @@ Check: scripts work when called outside the repository root.
 ### 0.7 Add JSON configuration
 
 Add the default configuration: depth 10, 10 ns clock, 64-event feature window,
-32-event CNN sequence, 16 CNN channels, kernel size 3, batch 1,024, label
-horizon 100, learning rate 0.001, L2 0.0001, one GPU-generated parameter update
-per completed batch, dashboard port 8080/rate 10 Hz, and seed 42.
+32-event GPU sequence, batch 1,024, label horizon 100, learning rate 0.001, L2
+0.0001, one GPU-generated parameter update per completed batch, dashboard port
+8080/rate 10 Hz, and seed 42. Model-specific settings belong to the selected
+Phase 7 learner, not to the common GPU/RTL contract.
 
 Check: demo parses and prints the effective configuration.
 
@@ -368,7 +376,18 @@ Check: seeded one-million-event replay has no divergence.
 
 **Gate:** RTL book behavior is proven equivalent to C++ before features begin.
 
-## Phase 5 — RTL features, strategy, and runtime
+## Phase 5 — RTL features, strategy, runtime, and coordinator refactor
+
+### 5.0 Establish the runtime component boundaries
+
+Keep the existing market semantics unchanged, but split the application into:
+`EventReader` (`io/`), optional `ReferenceModel` (`reference/`),
+`VerilatorRunner` (`verilator/`), `ReplayCoordinator` (`app/`), and future
+`GpuModel` (`gpu/`). Keep `main.cpp` limited to option parsing and selecting a
+runtime mode.
+
+Check: reference-only replay produces the same final checksum before and after the
+move, and all existing C++ tests remain green.
 
 ### 5.1 Port fixed-point primitives to RTL
 
@@ -438,7 +457,11 @@ Check: one command completes with tracing disabled by default.
 
 **Gate:** the entire simulated hardware pipeline is correct before GPU work.
 
-## Phase 6 — OpenCL infrastructure
+## Phase 6 — GPU/RTL contract and OpenCL infrastructure
+
+Phase 6 proves the reusable connection, not a particular learning algorithm. It must
+be possible to replace the Phase 7 learner without changing RTL, `VerilatorRunner`,
+or `ReplayCoordinator`.
 
 ### 6.1 Enumerate OpenCL platforms/devices
 
@@ -465,43 +488,73 @@ log on compilation failure.
 
 Check: vector copy GPU output matches host data.
 
-### 6.5 Define batch memory layout
+### 6.5 Define the model-independent GPU schemas
+
+Define, document, and test two versioned packed contracts:
+
+- `FeatureSnapshot`: eight valid Q16.16 features, event index, timestamp, model
+  version, and validity state, received from RTL through `VerilatorRunner`.
+- `ModelUpdate`: exactly eight bounded Q16.16 weight adjustments, one bounded Q16.16
+  bias adjustment, monotonically increasing update version, and a complete marker.
+
+The GPU and RTL do not communicate directly. `ReplayCoordinator` owns the conversion,
+validation, and hand-off between these contracts.
+
+Check: byte layout, field order, versions, and invalid-packet rejection are covered by
+host tests.
+
+### 6.6 Define batch memory layout
 
 Use contiguous `[sample][time][feature]` storage for 32 x 8 feature sequences,
-the current eight-feature vector used by the FPGA scorer, and labels. Document
-element order, alignment, and the absence of future data.
+assembled by `ReplayCoordinator` from valid `FeatureSnapshot` values. The GPU owns no
+RTL window state; it receives completed feature snapshots only. Document element order,
+alignment, and the absence of future data.
 
 Check: host packing test verifies positions and ordering.
 
-### 6.6 Allocate mapped pinned buffers
+### 6.7 Allocate mapped pinned buffers and latest-result mailbox
 
 Create two `CL_MEM_ALLOC_HOST_PTR` buffers and map once where supported.
+Allocate a result mailbox capable of holding one complete `ModelUpdate`; retaining the
+newest complete update is allowed, but partial packets must never be visible.
 
 Check: mapped round-trip test passes.
 
-### 6.7 Implement buffer ownership states
+### 6.8 Implement buffer ownership states
 
 Enforce `Free → Filling → Ready → InFlight → Free` and reject all other moves.
 
 Check: unit tests cover every transition.
 
-### 6.8 Submit non-blocking transfers
+### 6.9 Submit non-blocking transfers
 
 Submit ready batches with OpenCL events; never use queue-wide finish in the
 steady-state loop.
 
 Check: second buffer fills while first transfer is in flight.
 
-### 6.9 Poll completions and profile conditionally
+### 6.10 Poll completions, retain newest result, and profile conditionally
 
 Return a buffer to Free only after its event completes; collect profiling only
-in benchmark mode.
+in benchmark mode. Poll GPU completion once per replay iteration; publish only a
+complete newest `ModelUpdate` to the coordinator.
 
 Check: delayed completion cannot cause buffer overwrite.
 
-**Gate:** portable OpenCL transfers are safe and asynchronous.
+### 6.11 Prove the safe GPU-to-RTL hand-off
 
-## Phase 7 — Temporal CNN learning and parameter updates
+Use a smoke-kernel-produced test `ModelUpdate`. `ReplayCoordinator` must reject
+non-finite/out-of-range/incomplete results, write all nine values through
+`VerilatorRunner` into the RTL shadow bank, and commit only at an event boundary.
+
+Check: a complete update changes RTL model version once; an incomplete or invalid
+update cannot affect a signal.
+
+**Gate:** portable OpenCL transfers are safe and asynchronous, the eight-feature input
+and nine-value update schemas are proven, and a complete test update reaches RTL only
+through an atomic commit.
+
+## Phase 7 — Pluggable GPU learning model and parameter updates
 
 ### 7.1 Implement the pending-label queue
 
@@ -517,20 +570,19 @@ Future midpoint rise is label 1; fall is 0; ties/invalid states are omitted.
 
 Check: rise, fall, tie, empty book, and horizon boundary tests.
 
-### 7.3 Implement CPU temporal-CNN oracle
+### 7.3 Implement a CPU oracle for the selected model
 
-Implement deterministic forward and backward propagation for
-`Conv1D(16, k=3) -> ReLU -> Conv1D(16, k=3) -> ReLU -> global average pool ->
-9 outputs`. Treat the nine outputs as bounded eight-weight and one-bias
-adjustments, add them to the stable FPGA base model, then calculate sigmoid,
-binary-cross-entropy loss, mini-batch gradient, L2, and accuracy.
+Implement deterministic forward/backward behaviour for the chosen model. The initial
+model may be ordinary linear or logistic regression. It consumes the Phase 6 input
+layout and produces only a Phase 6 `ModelUpdate`; it does not know about Verilog.
 
-Check: hand-worked convolution, ReLU, pooling, generated-weight, and batch vectors.
+Check: hand-worked prediction, loss, gradient, generated-update, and batch vectors.
 
-### 7.4 Implement GPU prediction/update kernels
+### 7.4 Implement GPU prediction/update kernels for the selected model
 
-Keep CNN parameters device-resident. Implement forward, backward, update, and
-latest-sequence inference kernels; calculate compact loss/accuracy metrics.
+Keep learner parameters device-resident. Implement forward, backward, update, and
+latest-sequence inference kernels; calculate compact loss/accuracy metrics and return
+the Phase 6 `ModelUpdate` packet.
 
 Check: CPU/GPU generated values, prediction, gradient, and one-update agreement
 within documented tolerance.
@@ -547,10 +599,10 @@ Poll completions once per event loop iteration with no blocking finish/wait.
 
 Check: timing instrumentation contains no steady-state global wait.
 
-### 7.7 Schedule GPU weight readback
+### 7.7 Schedule GPU `ModelUpdate` readback
 
 After every completed training batch, run inference on the latest valid sequence
-and enqueue a nine-value readback tied to the batch sequence.
+and enqueue one complete `ModelUpdate` readback tied to the batch sequence.
 
 Check: no early or duplicate readbacks.
 
@@ -562,22 +614,23 @@ clamp/saturation counts. Keep FPGA action thresholds fixed in this version.
 
 Check: injected invalid value never reaches RTL.
 
-### 7.9 Write shadow bank then commit
+### 7.9 Hand the update to the Phase 6 coordinator contract
 
-Write all eight weight-adjustment fields and the bias-adjustment field, verify
-completeness, pulse commit at an event boundary, then verify version increment.
+Pass the complete packet to `ReplayCoordinator`; reuse the Phase 6 validation, shadow
+bank write, and atomic-commit path. Do not duplicate RTL hand-off logic inside the
+learner.
 
 Check: no signal contains a mixed model.
 
 ### 7.10 Add end-to-end adaptive test
 
 Use deterministic data for two batches and one generated-parameter commit; assert
-model version, bounded conversion, and a following RTL score change. Compare
-against the ordinary regression baseline as a reported experiment.
+model version, bounded conversion, and a following RTL score change. Compare against
+the selected CPU oracle as a reported experiment.
 
 Check: GPU test skips explicitly on hosts without supported GPU.
 
-**Gate:** validated GPU CNN learning changes FPGA-model behavior only atomically,
+**Gate:** validated GPU learning changes FPGA-model behavior only atomically,
 while the FPGA continues event processing without waiting for GPU work.
 
 ## Phase 8 — Dashboard
