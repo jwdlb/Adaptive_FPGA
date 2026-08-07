@@ -1,11 +1,14 @@
 // Shared protocol types for the Phase 4 RTL order book.
 // Keep encodings and widths aligned with include/market/event.hpp.
+`timescale 1ns/1ps
 package market_types_pkg;
 
   // compile-time configurable constant
   parameter int unsigned BOOK_DEPTH = 10;
+  /* verilator lint_off UNUSEDPARAM */
   parameter int unsigned FEATURE_COUNT = 8;
   parameter int unsigned FEATURE_WINDOW_SIZE = 64;
+  /* verilator lint_on UNUSEDPARAM */
 
   // creates a type 'event_type_t' that can hold one of the four named event values.
   // - typedef creates a resuable type alias (i.e. it gives a name to this type, event_type_t)
@@ -66,6 +69,7 @@ package market_types_pkg;
   // - automatic means that the function can be called recursively as each call has it's onw stack frame (local storage)
   // - logic means that the function returns a single bit value (1 valid or 0 invalid)
   // - input market_event_t candidate means that the function takes a single argument of type market_event_t
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic event_is_well_formed(input market_event_t candidate);
     // If the price is zero or negative, the event is invalid.
     if (candidate.price_ticks <= 0) begin
@@ -82,6 +86,7 @@ package market_types_pkg;
     // Update with quantity zero is valid: it removes a visible level.
     return 1'b1;
   endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   // Saturated add function, instead of wrapping around sum after overflow, it “sticks” at the maximum.
   // - return value is 32-bits UNSIGNED logic vector

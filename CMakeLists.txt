@@ -141,6 +141,11 @@ if(BUILD_TESTING)
 endif()
 
 if(VERILATOR_EXECUTABLE)
+    # Verilator uses the host C++ compiler. Keep its ccache files inside the build
+    # directory so RTL builds work even when the system ccache temporary folder is
+    # unavailable or read-only.
+    set(RTL_CCACHE_DIR ${CMAKE_BINARY_DIR}/verilator_ccache)
+    set(RTL_CCACHE_TEMPDIR ${CMAKE_BINARY_DIR}/verilator_ccache_tmp)
     set(RTL_COMMON_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
         ${CMAKE_CURRENT_SOURCE_DIR}/rtl/fixed_point_pkg.sv
@@ -152,7 +157,13 @@ if(VERILATOR_EXECUTABLE)
     )
 
     add_custom_target(rtl_tests
-        COMMAND ${VERILATOR_EXECUTABLE}
+        # Create the project-local ccache directories before starting Verilator.
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${RTL_CCACHE_DIR} ${RTL_CCACHE_TEMPDIR}
+        # Apply the local ccache settings only to this Verilator command.
+        COMMAND ${CMAKE_COMMAND} -E env
+            CCACHE_DIR=${RTL_CCACHE_DIR}
+            CCACHE_TEMPDIR=${RTL_CCACHE_TEMPDIR}
+            ${VERILATOR_EXECUTABLE}
             --binary
             --timing
             --assert
@@ -162,8 +173,37 @@ if(VERILATOR_EXECUTABLE)
             ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
             ${CMAKE_CURRENT_SOURCE_DIR}/rtl/order_book.sv
             ${CMAKE_CURRENT_SOURCE_DIR}/tb/order_book_tb.sv
+        # --binary builds the standalone testbench executable but does not run it,
+        # so execute it explicitly as part of this target.
+        COMMAND ${CMAKE_BINARY_DIR}/verilator_order_book_tb/Vorder_book_tb
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Building and running standalone RTL order-book tests"
+    )
+
+    add_custom_target(rtl_differential_test
+        # This target builds a C++ test program together with the RTL model. The
+        # program feeds the same deterministic events to both implementations.
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${RTL_CCACHE_DIR} ${RTL_CCACHE_TEMPDIR}
+        COMMAND ${CMAKE_COMMAND} -E env
+            CCACHE_DIR=${RTL_CCACHE_DIR}
+            CCACHE_TEMPDIR=${RTL_CCACHE_TEMPDIR}
+            ${VERILATOR_EXECUTABLE}
+            --cc --exe --build --assert --Wall
+            --top-module order_book_cpp_wrapper
+            --Mdir ${CMAKE_BINARY_DIR}/verilator_order_book_differential
+            # Supply the normal project headers to the C++ reference model used by
+            # the differential executable.
+            -CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/include -std=c++20 -Wall -Wextra"
+            ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/rtl/order_book.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/order_book_cpp_wrapper.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/order_book_differential.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/market/event.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/market/order_book.cpp
+        # The executable performs the one-million-event, per-event comparison.
+        COMMAND ${CMAKE_BINARY_DIR}/verilator_order_book_differential/Vorder_book_cpp_wrapper
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Building and running the one-million-event C++/RTL order-book differential test"
     )
 
     add_custom_target(rtl_phase5_tests

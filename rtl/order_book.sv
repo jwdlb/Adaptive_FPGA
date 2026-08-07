@@ -11,6 +11,7 @@
 // This file is intentionally a skeleton: implement each TODO and compare its behaviour with the C++
 // OrderBook reference before moving to the next operation.
 
+`timescale 1ns/1ps
 
 // This starts a hardware module called order_book
 // #(...) contains module parameters: compile-time configuration values.
@@ -41,6 +42,11 @@ module order_book #(
 );
   // Imports everything from market_types_pkg into this module’s scope, so no more market_types_pkg::{x}
   import market_types_pkg::*;
+
+  // The state-machine indices include the sentinel value BOOK_DEPTH, so the
+  // fixed four-bit storage uses explicitly sized constants in comparisons.
+  localparam logic [3:0] BOOK_DEPTH_INDEX = BOOK_DEPTH[3:0];
+  localparam logic [3:0] LAST_INDEX = BOOK_DEPTH_INDEX - 4'd1;
 
   // The order book is implemented as a finite state machine (FSM) with the following states:
   typedef enum logic [3:0] {
@@ -96,11 +102,24 @@ module order_book #(
   // This is used only to locate a possible insertion point; the shift/write
   // implementation belongs in ST_APPLY.
   // 1 bit output, 1 for selected level price is before event, 0 for selected level price is not before event. The input is a price_level_t struct.
-  function automatic logic price_precedes_event(input price_level_t level);
+  function automatic logic price_precedes_event(input logic signed [31:0] level_price);
     if (current_event.side == SIDE_BID) begin
-      return level.price_ticks > current_event.price_ticks;
+      return level_price > current_event.price_ticks;
     end
-    return level.price_ticks < current_event.price_ticks;
+    return level_price < current_event.price_ticks;
+  endfunction
+
+  // Convert an unsigned quantity into the signed 64-bit flow-delta domain.
+  function automatic logic signed [63:0] quantity_as_i64(input logic [31:0] raw_quantity);
+    return $signed({32'd0, raw_quantity});
+  endfunction
+
+  // Calculate a quantity change without relying on implicit expression widths.
+  function automatic logic signed [63:0] quantity_delta(
+      input logic [31:0] new_quantity,
+      input logic [31:0] old_quantity
+  );
+    return quantity_as_i64(new_quantity) - quantity_as_i64(old_quantity);
   endfunction
 
   // This continuously sets in_ready, as assign is combinational logic and does not require a clock edge, it updates whenever state changes. 
@@ -172,7 +191,7 @@ module order_book #(
             // Initialises the search variables: 
             scan_index   <= '0;
             match_index  <= '0;
-            insert_index <= BOOK_DEPTH;  // Represents “no insertion point found yet” because the valid indices are 0–9. If we find a valid insertion point, we will overwrite this value with the correct index.
+            insert_index <= BOOK_DEPTH_INDEX;  // Represents “no insertion point found yet” because the valid indices are 0–9. If we find a valid insertion point, we will overwrite this value with the correct index.
             match_found  <= 1'b0;
             insert_found <= 1'b0;
             // Moves to the multi-clock search state.
@@ -188,7 +207,7 @@ module order_book #(
           // Searches at most one level per cycle. It deliberately does not
           // mutate storage; use its recorded indices in ST_APPLY.
 
-          if (scan_index == BOOK_DEPTH) begin  // Once the search has scanned all levels, this is the only way to move over to the next state. The FSM will then apply the event to the book.
+          if (scan_index == BOOK_DEPTH_INDEX) begin  // Once the search has scanned all levels, this is the only way to move over to the next state. The FSM will then apply the event to the book.
             state <= ST_APPLY;  // move to the apply state.
           end else begin  // If there are still levels to scan, then check the current level for a match or insertion point.
             // Checks whether the current level is empty, selected_level(...) chooses whether to look at bids or asks based on the current event's side.
@@ -201,7 +220,7 @@ module order_book #(
             end else if (selected_work_level(scan_index).price_ticks == current_event.price_ticks) begin  // if the slot is not empty, check whether the price matches the current event's price.
               match_index <= scan_index;  // record the index of the matching price level
               match_found <= 1'b1;  // set the match_found flag to true, so we don't overwrite it with a later match
-            end else if (!insert_found && !price_precedes_event(selected_work_level(scan_index))) begin  // if we find an insertion point in the middle of the active levels ( price_precedes_event(level) asks whether the existing level should remain before the incoming event ).
+            end else if (!insert_found && !price_precedes_event(selected_work_level(scan_index).price_ticks)) begin  // if we find an insertion point in the middle of the active levels ( price_precedes_event(level) asks whether the existing level should remain before the incoming event ).
               insert_index <= scan_index;  // record the index of the insertion point
               insert_found <= 1'b1;  // set the insert_found flag to true, so we don't overwrite it with a later insertion point
             end
@@ -248,12 +267,12 @@ module order_book #(
                 operation_changes_book <= 1'b1;
                 state                  <= ST_CHECK_CROSS;
 
-              end else if (insert_index == BOOK_DEPTH) begin  // If the price doesn't exist and the price is worse than the tenth visible level, then we ignore the event. The book is full and the new price is not good enough to be visible.
+              end else if (insert_index == BOOK_DEPTH_INDEX) begin  // If the price doesn't exist and the price is worse than the tenth visible level, then we ignore the event. The book is full and the new price is not good enough to be visible.
                 // Worse than the tenth visible level: ignored successfully.
                 state <= ST_CHECK_CROSS;
 
               end else begin  // If the price doesn't exist and the price is within the ten visible levels, then we need to insert a new level. This requires shifting all worse levels down by one to make room for the new level.
-                shift_index <= BOOK_DEPTH - 1;
+                shift_index <= LAST_INDEX;
                 state       <= ST_SHIFT_RIGHT;
               end
             end
@@ -280,15 +299,13 @@ module order_book #(
               end else begin
                 // The flow delta is: new quantity − old quantity
                 if (side_is_bid()) begin  // If the event is a BID, work with work_bids
-                  order_flow_delta <= order_flow_sign() *
-                      ($signed({1'b0, current_event.quantity}) -
-                       $signed({1'b0, work_bids[match_index].quantity}));
+                  order_flow_delta <= order_flow_sign() * quantity_delta(
+                      current_event.quantity, work_bids[match_index].quantity);
 
                   work_bids[match_index].quantity <= current_event.quantity;
                 end else begin  // Else the event is an ASK, work with work_asks
-                  order_flow_delta <= order_flow_sign() *
-                      ($signed({1'b0, current_event.quantity}) -
-                       $signed({1'b0, work_asks[match_index].quantity}));  // For an ask order, the quantity difference is multiplied by -1
+                  order_flow_delta <= order_flow_sign() * quantity_delta(
+                      current_event.quantity, work_asks[match_index].quantity);  // For an ask order, the quantity difference is multiplied by -1
 
                   work_asks[match_index].quantity <= current_event.quantity;
                 end
@@ -398,7 +415,7 @@ module order_book #(
         end
 
         ST_REMOVE: begin  // This state removes one level and keeps all active levels contiguous from index zero.
-          if (shift_index < BOOK_DEPTH - 1) begin  // If the cursor is not yet at the final array slot, copy the following level over the current level.
+          if (shift_index < LAST_INDEX) begin  // If the cursor is not yet at the final array slot, copy the following level over the current level.
             if (side_is_bid()) begin
               work_bids[shift_index] <= work_bids[shift_index + 1];
             end else begin

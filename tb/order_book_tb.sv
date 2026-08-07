@@ -12,7 +12,7 @@
 module order_book_tb;
   import market_types_pkg::*;
 
-  logic clk = 1'b0;
+  logic clk;
   logic rst_n = 1'b0;
   logic in_valid;
   logic in_ready;
@@ -24,7 +24,10 @@ module order_book_tb;
   price_level_t bid_snapshot [0:BOOK_DEPTH-1];
   price_level_t ask_snapshot [0:BOOK_DEPTH-1];
 
-  always #5 clk = ~clk;
+  initial begin
+    clk = 1'b0;
+    forever #5 clk = ~clk;
+  end
 
   order_book dut (
     .clk,
