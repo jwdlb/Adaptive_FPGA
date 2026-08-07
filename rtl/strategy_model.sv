@@ -74,7 +74,7 @@ module strategy_model (
       score <= '0;
       action <= ACTION_HOLD;
       signal_valid <= 1'b0;
-      model_version <= '0;q
+      model_version <= '0;
       update_count <= '0;
       active_buy_threshold <= '0;
       active_sell_threshold <= '0;

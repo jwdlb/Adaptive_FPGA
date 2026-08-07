@@ -206,6 +206,28 @@ if(VERILATOR_EXECUTABLE)
         COMMENT "Building and running the one-million-event C++/RTL order-book differential test"
     )
 
+    # Verilator generates the Vmarket_pipeline_cpp_wrapper header at build time, so
+    # the reusable C++ runner is compiled by this dedicated RTL target rather than
+    # by the normal CPU-only application library.
+    add_custom_target(verilator_runner_tests
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${RTL_CCACHE_DIR} ${RTL_CCACHE_TEMPDIR}
+        COMMAND ${CMAKE_COMMAND} -E env
+            CCACHE_DIR=${RTL_CCACHE_DIR}
+            CCACHE_TEMPDIR=${RTL_CCACHE_TEMPDIR}
+            ${VERILATOR_EXECUTABLE}
+            --cc --exe --build --assert --Wall -Wno-fatal
+            --top-module market_pipeline_cpp_wrapper
+            --Mdir ${CMAKE_BINARY_DIR}/verilator_runner_tests
+            -CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/include -std=c++20 -Wall -Wextra"
+            ${RTL_COMMON_SOURCES}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/market_pipeline_cpp_wrapper.sv
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/verilator/verilator_runner.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/verilator_runner_tests.cpp
+        COMMAND ${CMAKE_BINARY_DIR}/verilator_runner_tests/Vmarket_pipeline_cpp_wrapper
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Building and running VerilatorRunner integration tests"
+    )
+
     add_custom_target(rtl_phase5_tests
         COMMAND ${VERILATOR_EXECUTABLE}
             --binary --timing --assert -Wno-fatal

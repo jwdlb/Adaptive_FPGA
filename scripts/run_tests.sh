@@ -18,5 +18,5 @@ ctest --test-dir "${repo_dir}/build" --output-on-failure
 # When Verilator is available, also run the standalone RTL checks and the long
 # C++/RTL differential replay. These targets are omitted on CPU-only hosts.
 if command -v verilator >/dev/null 2>&1; then
-    cmake --build "${repo_dir}/build" --target rtl_tests rtl_differential_test
+    cmake --build "${repo_dir}/build" --target rtl_tests rtl_differential_test verilator_runner_tests
 fi
