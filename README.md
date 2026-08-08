@@ -33,6 +33,7 @@ first configure.
 ./build/market_engine_demo --list-opencl-devices
 ./build/market_engine_demo --select-gpu
 ./build/market_engine_demo --gpu-index 0
+./build/market_engine_demo --gpu-smoke-test
 ```
 
 Generate a deterministic stream and replay it through the C++ reference:

@@ -194,6 +194,8 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
             options.list_opencl_devices = true;
         } else if (argument == "--select-gpu") {
             options.select_gpu = true;
+        } else if (argument == "--gpu-smoke-test") {
+            options.gpu_smoke_test = true;
         } else if (argument == "--help" || argument == "-h" || argument == "--version") {
             continue;
         } else {
@@ -209,8 +211,8 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
     if (options.gpu_index && options.gpu_name) {
         throw ConfigError("--gpu-index and --gpu-name cannot be used together");
     }
-    if (options.no_gpu && (options.select_gpu || options.gpu_index || options.gpu_name)) {
-        throw ConfigError("--no-gpu cannot be used with --select-gpu, --gpu-index, or --gpu-name");
+    if (options.no_gpu && (options.select_gpu || options.gpu_smoke_test || options.gpu_index || options.gpu_name)) {
+        throw ConfigError("--no-gpu cannot be used with GPU selection or --gpu-smoke-test");
     }
     validate_config(options.config);
     return options;
@@ -234,6 +236,7 @@ std::string usage(std::string_view executable_name) {
            "  --benchmark                Reserved for a future benchmark mode\n"
            "  --list-opencl-devices      Print detected OpenCL devices\n"
            "  --select-gpu               Select the first available GPU, or the requested GPU\n"
+           "  --gpu-smoke-test           Run [1, 2, 3] -> [2, 4, 6] on the selected GPU\n"
            "  --version                  Print program version\n"
            "  --help, -h                 Print this help\n";
 }

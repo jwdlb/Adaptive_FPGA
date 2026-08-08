@@ -1,0 +1,324 @@
+// Reusable OpenCL connection and GPU smoke test for Adaptive_FPGA.
+//
+// This file selects a GPU, creates the OpenCL resources needed to use it, and
+// compiles a tiny kernel that doubles float values. The doubling operation is a
+// health check for the complete host-to-GPU path: device selection, context and
+// queue creation, kernel compilation, buffer transfers, kernel execution, and
+// result retrieval. It is infrastructure for future GPU model training, not
+// the trading strategy or FPGA RTL implementation itself.
+#include "gpu/gpu_model.hpp"
+
+#include <array>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <stdexcept>
+#include <utility>
+
+#if MARKET_ENGINE_HAS_OPENCL
+#include <CL/cl.h>
+#endif
+
+namespace market_engine::gpu {
+namespace {
+
+#if MARKET_ENGINE_HAS_OPENCL
+// Read the OpenCL kernel source code from disk before compiling it for the GPU.
+[[nodiscard]] std::string read_text_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("cannot open OpenCL kernel: " + path.string());
+    }
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+// Return the compiler log produced while OpenCL builds a kernel program.
+// This is included in errors so a broken .cl file is easier to diagnose.
+[[nodiscard]] std::string program_build_log(cl_program program, cl_device_id device) {
+    std::size_t size = 0;
+    if (clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &size) != CL_SUCCESS) {
+        return "<OpenCL did not provide a build log>";
+    }
+    std::string log(size, '\0');
+    if (clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, size, log.data(), nullptr) != CL_SUCCESS) {
+        return "<OpenCL did not provide a readable build log>";
+    }
+    if (!log.empty() && log.back() == '\0') log.pop_back();
+    return log;
+}
+
+// Re-discover the low-level OpenCL device ID described by a saved device record.
+// OpenclDeviceInfo stores stable list positions, while OpenCL calls need IDs.
+[[nodiscard]] cl_device_id find_device_id(const app::OpenclDeviceInfo& selected) {
+    // Re-enumerate platforms and confirm the selected one still exists.
+    cl_uint platform_count = 0;
+    if (clGetPlatformIDs(0, nullptr, &platform_count) != CL_SUCCESS || selected.platform_index >= platform_count) {
+        throw std::runtime_error("selected OpenCL platform is no longer available");
+    }
+    std::vector<cl_platform_id> platforms(platform_count);
+    if (clGetPlatformIDs(platform_count, platforms.data(), nullptr) != CL_SUCCESS) {
+        throw std::runtime_error("could not retrieve selected OpenCL platform");
+    }
+    const cl_platform_id platform = platforms[selected.platform_index];
+    // Look up all device types so the saved device index matches discovery.
+    cl_uint device_count = 0;
+    if (clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 0, nullptr, &device_count) != CL_SUCCESS ||
+        selected.device_index >= device_count) {
+        throw std::runtime_error("selected OpenCL device is no longer available");
+    }
+    std::vector<cl_device_id> devices(device_count);
+    if (clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, device_count, devices.data(), nullptr) != CL_SUCCESS) {
+        throw std::runtime_error("could not retrieve selected OpenCL device");
+    }
+    return devices[selected.device_index];
+}
+
+// Convert every unsuccessful OpenCL status code into a descriptive C++ error.
+void check_opencl(cl_int status, std::string_view action) {
+    if (status != CL_SUCCESS) {
+        throw std::runtime_error(std::string(action) + " failed (OpenCL error " + std::to_string(status) + ")");
+    }
+}
+#endif
+
+}  // namespace
+
+class GpuModel::Impl {
+public:
+    // Human-readable record of the GPU selected for this model instance.
+    app::OpenclDeviceInfo selected_device;
+
+#if MARKET_ENGINE_HAS_OPENCL
+    // OpenCL objects owned by this model. They are released in reverse order by cleanup().
+    cl_context context{nullptr};
+    cl_command_queue queue{nullptr};
+    cl_program program{nullptr};
+    cl_kernel smoke_kernel{nullptr};
+    cl_mem input_buffer{nullptr};
+    cl_mem output_buffer{nullptr};
+    cl_event input_complete{nullptr};
+    cl_event kernel_complete{nullptr};
+    cl_event output_complete{nullptr};
+    std::size_t buffer_capacity{0};
+
+    // Create every OpenCL resource needed by the reusable smoke-test operation.
+    explicit Impl(app::OpenclDeviceInfo device) : selected_device(std::move(device)) {
+        try {
+            // Convert the selected device's displayed indices back into an OpenCL ID.
+            const cl_device_id device_id = find_device_id(selected_device);
+            cl_int status = CL_SUCCESS;
+            // A context owns resources associated with one selected GPU.
+            context = clCreateContext(nullptr, 1, &device_id, nullptr, nullptr, &status);
+            check_opencl(status, "creating OpenCL context");
+
+            // The command queue orders copies and kernel launches sent to this GPU.
+            const cl_queue_properties queue_properties[] = {0};
+            queue = clCreateCommandQueueWithProperties(context, device_id, queue_properties, &status);
+            check_opencl(status, "creating OpenCL command queue");
+
+            // Load and compile the small OpenCL kernel used to verify GPU execution.
+            const std::filesystem::path kernel_path =
+                std::filesystem::path(MARKET_ENGINE_OPENCL_KERNEL_DIR) / "smoke_test.cl";
+            const std::string source = read_text_file(kernel_path);
+            const char* source_pointer = source.c_str();
+            const std::size_t source_size = source.size();
+            program = clCreateProgramWithSource(context, 1, &source_pointer, &source_size, &status);
+            check_opencl(status, "creating OpenCL program from " + kernel_path.string());
+            status = clBuildProgram(program, 1, &device_id, nullptr, nullptr, nullptr);
+            if (status != CL_SUCCESS) {
+                throw std::runtime_error("building OpenCL kernel " + kernel_path.string() + " failed (OpenCL error " +
+                                         std::to_string(status) + ")\nBuild log:\n" + program_build_log(program, device_id));
+            }
+            // Obtain the compiled function named `double_values` from the program.
+            smoke_kernel = clCreateKernel(program, "double_values", &status);
+            check_opencl(status, "creating double_values OpenCL kernel");
+        } catch (...) {
+            // Constructor failures must not leak resources already created above.
+            cleanup();
+            throw;
+        }
+    }
+
+    // Release all OpenCL resources when the model is destroyed.
+    ~Impl() {
+        cleanup();
+    }
+
+    // Release owned OpenCL objects and reset their handles to prevent reuse.
+    void cleanup() noexcept {
+        // Completion events refer to operations using the buffers, so release them first.
+        release_event(output_complete);
+        release_event(kernel_complete);
+        release_event(input_complete);
+        if (output_buffer != nullptr) {
+            clReleaseMemObject(output_buffer);
+            output_buffer = nullptr;
+        }
+        if (input_buffer != nullptr) {
+            clReleaseMemObject(input_buffer);
+            input_buffer = nullptr;
+        }
+        if (smoke_kernel != nullptr) {
+            clReleaseKernel(smoke_kernel);
+            smoke_kernel = nullptr;
+        }
+        if (program != nullptr) {
+            clReleaseProgram(program);
+            program = nullptr;
+        }
+        if (queue != nullptr) {
+            clReleaseCommandQueue(queue);
+            queue = nullptr;
+        }
+        if (context != nullptr) {
+            clReleaseContext(context);
+            context = nullptr;
+        }
+        buffer_capacity = 0;
+    }
+
+    // Ensure the reusable device buffers can hold `count` float values.
+    // Existing larger buffers are retained to avoid needless reallocations.
+    void ensure_buffer_capacity(std::size_t count) {
+        if (count <= buffer_capacity) return;
+        // Reject a size that would overflow the byte-count calculation below.
+        if (count > std::numeric_limits<std::size_t>::max() / sizeof(float)) {
+            throw std::runtime_error("GPU smoke-test input is too large");
+        }
+        // The old buffers are too small, so replace both with a matching larger pair.
+        if (output_buffer != nullptr) {
+            clReleaseMemObject(output_buffer);
+            output_buffer = nullptr;
+        }
+        if (input_buffer != nullptr) {
+            clReleaseMemObject(input_buffer);
+            input_buffer = nullptr;
+        }
+        cl_int status = CL_SUCCESS;
+        const std::size_t bytes = count * sizeof(float);
+        // Input travels host → GPU; output travels GPU → host.
+        input_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, bytes, nullptr, &status);
+        check_opencl(status, "creating OpenCL input buffer");
+        output_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, bytes, nullptr, &status);
+        check_opencl(status, "creating OpenCL output buffer");
+        buffer_capacity = count;
+    }
+
+    // Send floats to the GPU, run double_values, and return the computed floats.
+    [[nodiscard]] std::vector<float> double_values(std::span<const float> input) {
+        if (input.empty()) return {};
+        // The kernel's count argument is a 32-bit OpenCL unsigned integer.
+        if (input.size() > std::numeric_limits<cl_uint>::max()) {
+            throw std::runtime_error("GPU smoke-test input has too many values");
+        }
+        ensure_buffer_capacity(input.size());
+        // These events belong to the previous invocation and are no longer needed.
+        release_event(output_complete);
+        release_event(kernel_complete);
+        release_event(input_complete);
+
+        const std::size_t bytes = input.size_bytes();
+        // Enqueue a non-blocking host-to-device copy and retain its completion event.
+        check_opencl(clEnqueueWriteBuffer(queue, input_buffer, CL_FALSE, 0, bytes, input.data(), 0, nullptr, &input_complete),
+                     "sending smoke-test input to GPU");
+        const cl_uint count = static_cast<cl_uint>(input.size());
+        // Set the kernel parameters: input buffer, output buffer, and element count.
+        check_opencl(clSetKernelArg(smoke_kernel, 0, sizeof(input_buffer), &input_buffer), "setting smoke kernel input");
+        check_opencl(clSetKernelArg(smoke_kernel, 1, sizeof(output_buffer), &output_buffer), "setting smoke kernel output");
+        check_opencl(clSetKernelArg(smoke_kernel, 2, sizeof(count), &count), "setting smoke kernel count");
+        const std::size_t global_size = input.size();
+        // Launch one kernel work-item per input value after the upload completes.
+        check_opencl(clEnqueueNDRangeKernel(queue, smoke_kernel, 1, nullptr, &global_size, nullptr, 1, &input_complete,
+                                            &kernel_complete),
+                     "running smoke kernel");
+
+        std::vector<float> output(input.size());
+        // Read only after the kernel completes, then wait for this result to arrive.
+        check_opencl(clEnqueueReadBuffer(queue, output_buffer, CL_FALSE, 0, bytes, output.data(), 1, &kernel_complete,
+                                         &output_complete),
+                     "receiving smoke-test output from GPU");
+        check_opencl(clWaitForEvents(1, &output_complete), "waiting for smoke-test output");
+        return output;
+    }
+
+private:
+    // Release one optional OpenCL event and clear its handle.
+    static void release_event(cl_event& event) noexcept {
+        if (event != nullptr) {
+            clReleaseEvent(event);
+            event = nullptr;
+        }
+    }
+#else
+    // Keep the selected-device data valid in builds where OpenCL is unavailable.
+    explicit Impl(app::OpenclDeviceInfo device) : selected_device(std::move(device)) {}
+#endif
+};
+
+// Select the requested GPU and create its reusable OpenCL implementation.
+GpuModel::GpuModel(std::optional<std::uint32_t> gpu_index, std::optional<std::string_view> gpu_name)
+    : impl_(std::make_unique<Impl>(app::select_opencl_gpu(gpu_index, gpu_name))) {}
+
+// The implementation destructor releases the owned OpenCL resources.
+GpuModel::~GpuModel() = default;
+// Move ownership of the GPU connection into this model.
+GpuModel::GpuModel(GpuModel&&) noexcept = default;
+// Replace this model's GPU connection with one owned by another model.
+GpuModel& GpuModel::operator=(GpuModel&&) noexcept = default;
+
+// Return the human-readable details of the GPU selected during construction.
+const app::OpenclDeviceInfo& GpuModel::device() const noexcept {
+    return impl_->selected_device;
+}
+
+// Run the reusable doubling kernel, or explain that this build has no OpenCL support.
+std::vector<float> GpuModel::double_values(std::span<const float> input) {
+#if !MARKET_ENGINE_HAS_OPENCL
+    (void)input;
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    return impl_->double_values(input);
+#endif
+}
+
+// Run a small known-answer GPU health check: [1, 2, 3] must become [2, 4, 6].
+// Return passed, skipped, or failed rather than letting command-line callers
+// need to translate OpenCL exceptions themselves.
+GpuSmokeTestResult run_gpu_smoke_test(std::optional<std::uint32_t> gpu_index,
+                                      std::optional<std::string_view> gpu_name) {
+    try {
+        GpuModel model(gpu_index, gpu_name);
+        // A short input makes errors easy to display and verifies every data path.
+        constexpr std::array<float, 3> input{1.0F, 2.0F, 3.0F};
+        constexpr std::array<float, 3> expected{2.0F, 4.0F, 6.0F};
+        GpuSmokeTestResult result;
+        result.device = model.device();
+        result.output = model.double_values(input);
+        // A correct kernel must preserve the input length.
+        if (result.output.size() != expected.size()) {
+            result.message = "GPU returned the wrong number of smoke-test values";
+            return result;
+        }
+        // Compare floats with a small tolerance rather than exact equality.
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            if (std::fabs(result.output[index] - expected[index]) > 0.0001F) {
+                result.message = "GPU smoke-test output did not match [2, 4, 6]";
+                return result;
+            }
+        }
+        result.status = GpuSmokeTestStatus::passed;
+        result.message = "GPU returned [2, 4, 6] for input [1, 2, 3]";
+        return result;
+    } catch (const app::OpenclSelectionError& error) {
+        // A laptop with no requested GPU can skip this hardware-only test. An
+        // explicitly requested index/name, however, is a real user error and
+        // must not be mistaken for a successful or skipped selection.
+        return {.status = (gpu_index || gpu_name) ? GpuSmokeTestStatus::failed : GpuSmokeTestStatus::skipped,
+                .message = error.what()};
+    } catch (const std::exception& error) {
+        return {.status = GpuSmokeTestStatus::failed, .message = error.what()};
+    }
+}
+
+}  // namespace market_engine::gpu

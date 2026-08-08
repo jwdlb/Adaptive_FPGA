@@ -18,6 +18,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)     # Disables compiler-specific language extensio
 include(FetchContent)     # Allows external dependencies to be downloaded during configuration.
 include(CTest)      # Loads CMake's testing support.
 
+# Keep OpenCL source files in a known build-tree directory. GpuModel loads this
+# copy at runtime, so running the executable does not depend on the current folder.
+set(MARKET_ENGINE_OPENCL_KERNEL_DIR ${CMAKE_CURRENT_BINARY_DIR}/opencl_kernels)
+file(MAKE_DIRECTORY ${MARKET_ENGINE_OPENCL_KERNEL_DIR})
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/gpu/kernels/smoke_test.cl
+    ${MARKET_ENGINE_OPENCL_KERNEL_DIR}/smoke_test.cl
+    COPYONLY
+)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/gpu/kernels/smoke_test.cl)
+
 add_library(market_engine_project_options INTERFACE)     # Reusable container for compiler and linker settings.
 target_compile_options(market_engine_project_options INTERFACE        # Adds warning flags depending on the compiler.
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>      # GCC and Clang warning flags.
@@ -84,6 +96,7 @@ add_library(market_engine_app    # Separates reusable application code from the 
     src/app/config.cpp
     src/app/opencl_devices.cpp
     src/app/replay_coordinator.cpp
+    src/gpu/gpu_model.cpp
     src/io/event_reader.cpp
     src/market/event.cpp
     src/market/order_book.cpp
@@ -92,6 +105,9 @@ add_library(market_engine_app    # Separates reusable application code from the 
 
 # Add the include directory to this target and targets that link to it.
 target_include_directories(market_engine_app PUBLIC include)  
+target_compile_definitions(market_engine_app PRIVATE
+    MARKET_ENGINE_OPENCL_KERNEL_DIR="${MARKET_ENGINE_OPENCL_KERNEL_DIR}"
+)
 
 # Link shared compiler settings and the JSON library.
 target_link_libraries(market_engine_app
@@ -192,6 +208,7 @@ if(BUILD_TESTING)
         tests/cpp/order_book_tests.cpp
         tests/cpp/reference_model_tests.cpp
         tests/cpp/replay_coordinator_tests.cpp
+        tests/cpp/gpu_model_tests.cpp
     )
 
     # Link the tests with the application library and Catch2's supplied main().

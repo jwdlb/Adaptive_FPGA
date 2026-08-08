@@ -6,6 +6,7 @@
 #include "app/config.hpp"
 #include "app/opencl_devices.hpp"
 #include "app/replay_coordinator.hpp"
+#include "gpu/gpu_model.hpp"
 #include "io/event_reader.hpp"
 #include "market/order_book.hpp"
 
@@ -47,6 +48,22 @@ int main(int argc, char* argv[]) {
         const market_engine::app::RuntimeOptions options = market_engine::app::parse_command_line(argc, argv);
         if (options.list_opencl_devices) {
             std::cout << market_engine::app::opencl_device_report();
+            return 0;
+        }
+        if (options.gpu_smoke_test) {
+            const auto result = market_engine::gpu::run_gpu_smoke_test(
+                options.gpu_index,
+                options.gpu_name ? std::optional<std::string_view>(*options.gpu_name) : std::nullopt);
+            if (result.status == market_engine::gpu::GpuSmokeTestStatus::skipped) {
+                std::cout << "GPU smoke test skipped: " << result.message << '\n';
+                return 0;
+            }
+            if (result.status == market_engine::gpu::GpuSmokeTestStatus::failed) {
+                std::cerr << "GPU smoke test failed: " << result.message << '\n';
+                return 1;
+            }
+            std::cout << "GPU smoke test passed: " << result.message << '\n';
+            if (result.device) std::cout << market_engine::app::format_opencl_device(*result.device);
             return 0;
         }
         // GPU computation is introduced later in Phase 6. For now, a GPU selector

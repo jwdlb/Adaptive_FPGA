@@ -42,6 +42,7 @@ struct RuntimeOptions {
     bool benchmark{false};
     bool list_opencl_devices{false};
     bool select_gpu{false};
+    bool gpu_smoke_test{false};
     std::optional<std::uint32_t> gpu_index{};
     std::optional<std::string> gpu_name{};
 };
