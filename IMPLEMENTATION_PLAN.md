@@ -18,9 +18,10 @@ combine a later phase with an unfinished correctness gate.
 - `ReplayCoordinator` is the only GPU/RTL bridge. Verilog never calls GPU software,
   and the GPU never writes RTL state directly.
 - The GPU boundary is model-independent: valid RTL snapshots enter as eight Q16.16
-  features plus metadata, and every learner returns one complete nine-value
-  `ModelUpdate` (eight weight adjustments and one bias adjustment) plus version and
-  completion state.
+  features plus metadata, and every learner returns one complete ten-value
+  `ModelUpdate`: eight absolute weights (weight 7 is the bias/intercept) plus
+  absolute BUY and SELL thresholds and a version. Completion is represented by
+  the C++ mailbox making an update available, not by another data field.
 
 ## Phase 0 — Bootstrap
 
@@ -490,41 +491,49 @@ Check: vector copy GPU output matches host data.
 
 ### 6.5 Define the model-independent GPU schemas
 
-Define, document, and test two versioned packed contracts:
+Define, document, and test two small C++ contracts:
 
-- `FeatureSnapshot`: eight valid Q16.16 features, event index, timestamp, model
-  version, and validity state, received from RTL through `VerilatorRunner`.
-- `ModelUpdate`: exactly eight bounded Q16.16 weight adjustments, one bounded Q16.16
-  bias adjustment, monotonically increasing update version, and a complete marker.
+- `FeatureSnapshot`: eight Q16.16 features, event index, timestamp, and validity
+  state, received from RTL through `VerilatorRunner`.
+- `ModelUpdate`: exactly eight Q16.16 replacement weights, where weight 7 multiplies
+  the constant 1.0 feature and is therefore the bias/intercept; Q16.16 BUY and SELL
+  threshold replacements; and a monotonically increasing update version. Updates are
+  complete replacements, never deltas.
 
 The GPU and RTL do not communicate directly. `ReplayCoordinator` owns the conversion,
 validation, and hand-off between these contracts.
 
-Check: byte layout, field order, versions, and invalid-packet rejection are covered by
-host tests.
+Check: host tests cover fields, the bias position, stale-version rejection, and invalid
+BUY/SELL boundaries.
 
-### 6.6 Define batch memory layout
+### 6.6 Define batch layout and create two input buffers
 
-Use contiguous `[sample][time][feature]` storage for 32 x 8 feature sequences,
-assembled by `ReplayCoordinator` from valid `FeatureSnapshot` values. The GPU owns no
-RTL window state; it receives completed feature snapshots only. Document element order,
-alignment, and the absence of future data.
+Use one contiguous `[time][feature]` `FeatureBatch` of 32 x 8 Q16.16 values,
+assembled in arrival order from valid `FeatureSnapshot` values. The GPU owns no RTL
+window state; it receives completed feature snapshots only. Invalid snapshots do not
+enter the batch, and no future data is included. Create two host-side input slots so
+the replay side can fill one while the GPU owns the other.
 
-Check: host packing test verifies positions and ordering.
+Check: host test verifies 32 x 8 size, time/feature order, invalid-snapshot skip, and
+alternating two-slot operation.
 
-### 6.7 Allocate mapped pinned buffers and latest-result mailbox
+### 6.7 Enforce input-buffer ownership states
 
-Create two `CL_MEM_ALLOC_HOST_PTR` buffers and map once where supported.
-Allocate a result mailbox capable of holding one complete `ModelUpdate`; retaining the
-newest complete update is allowed, but partial packets must never be visible.
+Each input slot must be exactly one of `Free → Filling → Ready → InFlight → Free`.
+Reject every other transition, including `InFlight → Filling`, as a hard error. Only
+one GPU job is allowed in this simple first version.
 
-Check: mapped round-trip test passes.
+Check: tests cover legal alternation and every attempted illegal transition.
 
-### 6.8 Implement buffer ownership states
+### 6.8 Attach the two input slots to real OpenCL GPU memory
 
-Enforce `Free → Filling → Ready → InFlight → Free` and reject all other moves.
+Create two OpenCL device buffers, each exactly large enough for one contiguous
+`FeatureBatch`. Start a non-blocking host-to-device copy only from a `Ready` slot;
+use its OpenCL completion event to return that slot from `InFlight` to `Free`. The
+replay side can therefore fill the other slot while the GPU owns the first.
 
-Check: unit tests cover every transition.
+Check: GPU smoke test constructs both buffers; on a GPU machine, an upload event
+proves a feature batch reaches a selected device buffer.
 
 ### 6.9 Submit non-blocking transfers
 
@@ -536,22 +545,22 @@ Check: second buffer fills while first transfer is in flight.
 ### 6.10 Poll completions, retain newest result, and profile conditionally
 
 Return a buffer to Free only after its event completes; collect profiling only
-in benchmark mode. Poll GPU completion once per replay iteration; publish only a
-complete newest `ModelUpdate` to the coordinator.
+in benchmark mode. Poll GPU completion once per replay iteration; publish only the
+newest finished `ModelUpdate` to the coordinator.
 
 Check: delayed completion cannot cause buffer overwrite.
 
 ### 6.11 Prove the safe GPU-to-RTL hand-off
 
 Use a smoke-kernel-produced test `ModelUpdate`. `ReplayCoordinator` must reject
-non-finite/out-of-range/incomplete results, write all nine values through
+stale or invalid results, write all ten values through
 `VerilatorRunner` into the RTL shadow bank, and commit only at an event boundary.
 
-Check: a complete update changes RTL model version once; an incomplete or invalid
-update cannot affect a signal.
+Check: a finished update changes RTL model version once; a stale or invalid update
+cannot affect a signal.
 
 **Gate:** portable OpenCL transfers are safe and asynchronous, the eight-feature input
-and nine-value update schemas are proven, and a complete test update reaches RTL only
+and ten-value update schema are proven, and a finished test update reaches RTL only
 through an atomic commit.
 
 ## Phase 7 — Pluggable GPU learning model and parameter updates
@@ -606,11 +615,12 @@ and enqueue one complete `ModelUpdate` readback tied to the batch sequence.
 
 Check: no early or duplicate readbacks.
 
-### 7.8 Validate and convert generated adjustments
+### 7.8 Validate and convert generated replacement parameters
 
-Reject NaN/infinity. Clamp eight generated weight adjustments and one bias
-adjustment to documented bounds, convert them to saturated Q16.16, and record
-clamp/saturation counts. Keep FPGA action thresholds fixed in this version.
+Reject NaN/infinity. Clamp eight generated replacement weights (with weight 7
+as the bias/intercept) plus generated BUY and SELL threshold replacements to
+documented bounds, convert them to saturated Q16.16, and record clamp/saturation
+counts. The GPU trains/calibrates both action thresholds in this version.
 
 Check: injected invalid value never reaches RTL.
 

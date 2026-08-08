@@ -97,6 +97,8 @@ add_library(market_engine_app    # Separates reusable application code from the 
     src/app/opencl_devices.cpp
     src/app/replay_coordinator.cpp
     src/gpu/gpu_model.cpp
+    src/gpu/gpu_protocol.cpp
+    src/gpu/feature_buffers.cpp
     src/io/event_reader.cpp
     src/market/event.cpp
     src/market/order_book.cpp
@@ -209,6 +211,9 @@ if(BUILD_TESTING)
         tests/cpp/reference_model_tests.cpp
         tests/cpp/replay_coordinator_tests.cpp
         tests/cpp/gpu_model_tests.cpp
+        tests/cpp/gpu_protocol_tests.cpp
+        tests/cpp/feature_batch_tests.cpp
+        tests/cpp/feature_buffers_tests.cpp
     )
 
     # Link the tests with the application library and Catch2's supplied main().

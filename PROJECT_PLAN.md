@@ -9,9 +9,10 @@ Build a reproducible research prototype in which:
 - C++ replays decoded market events and coordinates all components.
 - A cycle-accurate Verilated SystemVerilog model owns the order book, feature calculation, and BUY/SELL/HOLD decision.
 - An OpenCL GPU learner, selected independently of the surrounding runtime,
-  generates bounded updates for the FPGA's eight feature weights and bias from
-  recent feature history. The first learner may be ordinary regression; a CNN
-  is an optional future implementation of the same interface.
+  generates bounded replacement values for the FPGA's eight weights (weight 7
+  is the bias/intercept) and its BUY/SELL thresholds from recent feature history.
+  The first learner may be ordinary regression; a CNN is an optional future
+  implementation of the same interface.
 - Complete generated parameter sets are committed atomically back into the RTL model.
 - A browser dashboard observes runtime state without entering the critical processing path.
 
@@ -343,18 +344,18 @@ Implement:
 - RAII context, command queue, program, kernel, buffer, and event wrappers;
 - full compiler build-log reporting;
 - a versioned GPU input contract: one valid RTL feature snapshot is eight Q16.16
-  values plus event metadata; the coordinator owns the 32-snapshot sequence ring and
-  packs contiguous `[sample][time][feature]` batches;
+  values plus event metadata; the coordinator owns a 32-snapshot collector and builds
+  contiguous `[time][feature]` batches;
 - a versioned GPU output contract: one complete `ModelUpdate` contains exactly eight
-  bounded weight adjustments, one bounded bias adjustment, a monotonically increasing
-  version, and a completion marker;
+  bounded replacement weights (weight 7 is the bias/intercept), bounded BUY and
+  SELL threshold replacements, and a monotonically increasing version;
 - host buffers allocated with `CL_MEM_ALLOC_HOST_PTR`, including a latest-result
-  mailbox for completed `ModelUpdate` packets;
+  mailbox that publishes `ModelUpdate` only after GPU completion;
 - mapped double buffers with explicit states: `Free`, `Filling`, `Ready`, `InFlight`;
 - non-blocking transfers and event-driven buffer reuse; and
 - profiling only in benchmark mode;
 - a coordinator-to-RTL hand-off that validates a complete newest `ModelUpdate`, writes
-  all nine fields to the shadow bank, and issues one commit only at an event boundary.
+  all ten fields to the shadow bank, and issues one commit only at an event boundary.
 
 The producer may acquire only a `Free` buffer. A transfer changes `Ready` to `InFlight`; completion returns it to `Free`. Any illegal transition is a hard error.
 
@@ -394,9 +395,9 @@ Commit sequence:
    of one `ModelUpdate` packet;
 2. wait only when the scheduled readback must be consumed;
 3. reject non-finite values;
-4. clamp the generated adjustments to their documented range, then convert and
+4. clamp the generated replacement weights and thresholds to their documented range, then convert and
    saturate them to Q16.16;
-5. write the eight weight-adjustment fields and bias-adjustment field to the RTL
+5. write the eight weight fields, BUY threshold, and SELL threshold to the RTL
    shadow bank;
 6. pulse commit once;
 7. verify the version increment and record latency.
