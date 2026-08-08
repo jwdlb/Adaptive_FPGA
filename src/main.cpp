@@ -49,6 +49,15 @@ int main(int argc, char* argv[]) {
             std::cout << market_engine::app::opencl_device_report();
             return 0;
         }
+        // GPU computation is introduced later in Phase 6. For now, a GPU selector
+        // is an explicit setup check: prove which GPU future work will use.
+        if (options.select_gpu || options.gpu_index || options.gpu_name) {
+            const auto selected = market_engine::app::select_opencl_gpu(
+                options.gpu_index,
+                options.gpu_name ? std::optional<std::string_view>(*options.gpu_name) : std::nullopt);
+            std::cout << "Selected GPU:\n" << market_engine::app::format_opencl_device(selected);
+            return 0;
+        }
 
         // This section prints information about the program and checks whether an input file was supplied.
         std::cout << "Adaptive FPGA–GPU Market Signal Engine\n";

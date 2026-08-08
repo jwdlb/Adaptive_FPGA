@@ -31,6 +31,8 @@ first configure.
 ./scripts/run_tests.sh
 ./build/market_engine_demo --help
 ./build/market_engine_demo --list-opencl-devices
+./build/market_engine_demo --select-gpu
+./build/market_engine_demo --gpu-index 0
 ```
 
 Generate a deterministic stream and replay it through the C++ reference:

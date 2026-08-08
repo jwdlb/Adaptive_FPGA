@@ -41,6 +41,9 @@ struct RuntimeOptions {
     bool no_dashboard{false};
     bool benchmark{false};
     bool list_opencl_devices{false};
+    bool select_gpu{false};
+    std::optional<std::uint32_t> gpu_index{};
+    std::optional<std::string> gpu_name{};
 };
 
 // Exception thrown when configuration loading, parsing, or validation fails.

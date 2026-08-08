@@ -173,6 +173,17 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
             options.verilator_check = true;
         } else if (argument == "--no-gpu") {
             options.no_gpu = true;
+        } else if (argument == "--gpu-index") {
+            const std::uint64_t value = parse_unsigned_option(argument, require_value(index, argc, argv, argument));
+            if (value > std::numeric_limits<std::uint32_t>::max()) {
+                throw ConfigError("--gpu-index is too large");
+            }
+            options.gpu_index = static_cast<std::uint32_t>(value);
+        } else if (argument == "--gpu-name") {
+            options.gpu_name = require_value(index, argc, argv, argument);
+            if (options.gpu_name->empty()) {
+                throw ConfigError("--gpu-name must not be empty");
+            }
         } else if (argument == "--no-dashboard") {
             options.no_dashboard = true;
         } else if (argument == "--trace") {
@@ -181,6 +192,8 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
             options.benchmark = true;
         } else if (argument == "--list-opencl-devices") {
             options.list_opencl_devices = true;
+        } else if (argument == "--select-gpu") {
+            options.select_gpu = true;
         } else if (argument == "--help" || argument == "-h" || argument == "--version") {
             continue;
         } else {
@@ -192,6 +205,12 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
     }
     if (options.reference_only && options.verilator_check) {
         throw ConfigError("--reference-only and --verilator-check cannot be used together");
+    }
+    if (options.gpu_index && options.gpu_name) {
+        throw ConfigError("--gpu-index and --gpu-name cannot be used together");
+    }
+    if (options.no_gpu && (options.select_gpu || options.gpu_index || options.gpu_name)) {
+        throw ConfigError("--no-gpu cannot be used with --select-gpu, --gpu-index, or --gpu-name");
     }
     validate_config(options.config);
     return options;
@@ -208,10 +227,13 @@ std::string usage(std::string_view executable_name) {
            "  --reference-only           Disable RTL/GPU runtime paths\n"
            "  --verilator-check          Compare every replay event against the Verilated RTL pipeline\n"
            "  --no-gpu                   Disable GPU runtime path\n"
+           "  --gpu-index N              Select GPU N (or inspect its availability)\n"
+           "  --gpu-name TEXT            Select a GPU by part of its name\n"
            "  --no-dashboard             Disable dashboard runtime path\n"
            "  --trace                    Request RTL tracing (future phase)\n"
            "  --benchmark                Reserved for a future benchmark mode\n"
            "  --list-opencl-devices      Print detected OpenCL devices\n"
+           "  --select-gpu               Select the first available GPU, or the requested GPU\n"
            "  --version                  Print program version\n"
            "  --help, -h                 Print this help\n";
 }
