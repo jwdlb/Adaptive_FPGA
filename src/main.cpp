@@ -51,9 +51,11 @@ int main(int argc, char* argv[]) {
         }
 
         // This section prints information about the program and checks whether an input file was supplied.
-        std::cout << "Adaptive FPGA–GPU Market Signal Engine (reference replay)\n";
+        std::cout << "Adaptive FPGA–GPU Market Signal Engine\n";
         std::cout << market_engine::app::format_config(options.config);
-        std::cout << "Runtime mode: " << (options.reference_only ? "reference-only" : "C++ reference") << '\n';
+        const std::string_view mode = options.verilator_check ? "Verilator check" :
+                                      (options.reference_only ? "reference-only" : "C++ reference");
+        std::cout << "Runtime mode: " << mode << '\n';
         if (!options.input_path) {
             std::cout << "No input supplied; use --input PATH to replay CSV or MKT1 binary events.\n";
             return 0;
@@ -61,12 +63,15 @@ int main(int argc, char* argv[]) {
 
         // This reads the market events from the input file.
         const auto events = market_engine::io::read_events(*options.input_path);
-        // ReplayCoordinator owns the current reference loop and will later coordinate RTL and GPU modes.
+        // ReplayCoordinator owns the reference loop and optional C++/RTL comparison mode.
         const market_engine::app::ReplayCoordinator coordinator(options.config);
-        const market_engine::app::ReplayResult replay = coordinator.run_reference(events, options.event_limit);
+        const market_engine::app::ReplayResult replay = options.verilator_check
+            ? coordinator.run_verilator_check(events, options.event_limit)
+            : coordinator.run_reference(events, options.event_limit);
         if (replay.error) {
             std::cerr << "Replay error at event " << *replay.failure_index << ": "
-                      << market_engine::market::to_string(*replay.error)
+                      << (replay.divergence_message ? *replay.divergence_message
+                                                     : market_engine::market::to_string(*replay.error))
                       << "; wrote failure_repro.csv\n";
             return 1;
         }
@@ -79,6 +84,7 @@ int main(int argc, char* argv[]) {
                   << "  errors: 0\n"
                   << "  events/s: " << std::fixed << std::setprecision(0)
                   << (replay.elapsed_seconds > 0.0 ? replay.processed_events / replay.elapsed_seconds : 0.0) << '\n'
+                  << "  RTL cycles: " << replay.rtl_cycles << '\n'
                   << "  final checksum: 0x" << std::hex << checksum << std::dec << '\n'
                   << "  final signal: " << market_engine::market::to_string(replay.final_signal.action)
                   << " (" << replay.final_signal.score << ")\n"

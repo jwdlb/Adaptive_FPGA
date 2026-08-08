@@ -169,6 +169,8 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
             options.config.feature_batch_size = static_cast<std::uint32_t>(value);
         } else if (argument == "--reference-only") {
             options.reference_only = true;
+        } else if (argument == "--verilator-check") {
+            options.verilator_check = true;
         } else if (argument == "--no-gpu") {
             options.no_gpu = true;
         } else if (argument == "--no-dashboard") {
@@ -188,6 +190,9 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
     if (options.event_limit.has_value() && *options.event_limit == 0U) {
         throw ConfigError("--events must be positive");
     }
+    if (options.reference_only && options.verilator_check) {
+        throw ConfigError("--reference-only and --verilator-check cannot be used together");
+    }
     validate_config(options.config);
     return options;
 }
@@ -201,6 +206,7 @@ std::string usage(std::string_view executable_name) {
            "  --seed N                   Override random seed\n"
            "  --batch-size N             Override GPU batch size\n"
            "  --reference-only           Disable RTL/GPU runtime paths\n"
+           "  --verilator-check          Compare every replay event against the Verilated RTL pipeline\n"
            "  --no-gpu                   Disable GPU runtime path\n"
            "  --no-dashboard             Disable dashboard runtime path\n"
            "  --trace                    Request RTL tracing (future phase)\n"

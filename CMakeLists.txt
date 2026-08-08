@@ -45,6 +45,23 @@ find_package(OpenCL QUIET)  # OpenCL is optional.
 find_package(Python3 QUIET COMPONENTS Interpreter)  # Python is optional.
 find_program(VERILATOR_EXECUTABLE verilator)  # Searches for the Verilator executable.
 
+if(VERILATOR_EXECUTABLE)
+    execute_process(
+        COMMAND ${VERILATOR_EXECUTABLE} -getenv VERILATOR_ROOT
+        OUTPUT_VARIABLE VERILATOR_ROOT_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    set(RTL_COMMON_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/fixed_point_pkg.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/order_book.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_window.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_engine.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/strategy_model.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_pipeline.sv
+    )
+endif()
+
 # Download external dependencies. Exact commits make builds reproducible.
 FetchContent_Declare(   # Declares the nlohmann_json dependency.
     nlohmann_json
@@ -116,6 +133,50 @@ target_compile_definitions(market_engine_app PUBLIC
     MARKET_ENGINE_PYTHON_AVAILABLE=${MARKET_ENGINE_PYTHON_AVAILABLE}
 )
 
+if(VERILATOR_EXECUTABLE)
+    # Generate and build the full RTL pipeline as two static libraries: the model
+    # itself and Verilator's simulation runtime. The normal demo links them only
+    # when Verilator is available, preserving the CPU-only build mode.
+    set(VERILATED_PIPELINE_DIR ${CMAKE_BINARY_DIR}/verilated_market_pipeline)
+    set(VERILATED_MODEL_LIBRARY ${VERILATED_PIPELINE_DIR}/libVmarket_pipeline_cpp_wrapper.a)
+    set(VERILATED_RUNTIME_LIBRARY ${VERILATED_PIPELINE_DIR}/libverilated.a)
+    add_custom_command(
+        OUTPUT ${VERILATED_MODEL_LIBRARY} ${VERILATED_RUNTIME_LIBRARY}
+               ${VERILATED_PIPELINE_DIR}/Vmarket_pipeline_cpp_wrapper.h
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${VERILATED_PIPELINE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_BINARY_DIR}/verilator_ccache ${CMAKE_BINARY_DIR}/verilator_ccache_tmp
+        COMMAND ${CMAKE_COMMAND} -E env
+            CCACHE_DIR=${CMAKE_BINARY_DIR}/verilator_ccache
+            CCACHE_TEMPDIR=${CMAKE_BINARY_DIR}/verilator_ccache_tmp
+            ${VERILATOR_EXECUTABLE}
+            --cc --build --assert --Wall -Wno-fatal
+            --top-module market_pipeline_cpp_wrapper
+            --Mdir ${VERILATED_PIPELINE_DIR}
+            ${RTL_COMMON_SOURCES}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/market_pipeline_cpp_wrapper.sv
+        DEPENDS ${RTL_COMMON_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tb/market_pipeline_cpp_wrapper.sv
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating the Verilated market pipeline for the replay runner"
+    )
+    add_custom_target(verilated_market_pipeline_codegen
+        DEPENDS ${VERILATED_MODEL_LIBRARY} ${VERILATED_RUNTIME_LIBRARY})
+    add_library(verilated_market_pipeline STATIC IMPORTED GLOBAL)
+    set_target_properties(verilated_market_pipeline PROPERTIES IMPORTED_LOCATION ${VERILATED_MODEL_LIBRARY})
+    add_library(verilated_runtime STATIC IMPORTED GLOBAL)
+    set_target_properties(verilated_runtime PROPERTIES IMPORTED_LOCATION ${VERILATED_RUNTIME_LIBRARY})
+    find_package(Threads REQUIRED)
+
+    target_sources(market_engine_app PRIVATE src/verilator/verilator_runner.cpp)
+    target_include_directories(market_engine_app PRIVATE ${VERILATED_PIPELINE_DIR})
+    target_include_directories(market_engine_app SYSTEM PRIVATE
+        ${VERILATOR_ROOT_DIR}/include
+        ${VERILATOR_ROOT_DIR}/include/vltstd
+    )
+    add_dependencies(market_engine_app verilated_market_pipeline_codegen)
+    target_link_libraries(market_engine_app PRIVATE verilated_market_pipeline verilated_runtime Threads::Threads atomic)
+endif()
+
 # Build the main demo executable from src/main.cpp.
 add_executable(market_engine_demo src/main.cpp)
 
@@ -130,10 +191,13 @@ if(BUILD_TESTING)
         tests/cpp/protocol_tests.cpp
         tests/cpp/order_book_tests.cpp
         tests/cpp/reference_model_tests.cpp
+        tests/cpp/replay_coordinator_tests.cpp
     )
 
     # Link the tests with the application library and Catch2's supplied main().
     target_link_libraries(market_engine_tests PRIVATE market_engine_app Catch2::Catch2WithMain)
+    # Fixture tests need a stable source-tree location even when CTest runs from build/.
+    target_compile_definitions(market_engine_tests PRIVATE MARKET_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
     # Load Catch2's CMake helpers and automatically discover the test cases.
     include(Catch)
@@ -146,16 +210,6 @@ if(VERILATOR_EXECUTABLE)
     # unavailable or read-only.
     set(RTL_CCACHE_DIR ${CMAKE_BINARY_DIR}/verilator_ccache)
     set(RTL_CCACHE_TEMPDIR ${CMAKE_BINARY_DIR}/verilator_ccache_tmp)
-    set(RTL_COMMON_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_types_pkg.sv
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/fixed_point_pkg.sv
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/order_book.sv
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_window.sv
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_engine.sv
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/strategy_model.sv
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_pipeline.sv
-    )
-
     add_custom_target(rtl_tests
         # Create the project-local ccache directories before starting Verilator.
         COMMAND ${CMAKE_COMMAND} -E make_directory ${RTL_CCACHE_DIR} ${RTL_CCACHE_TEMPDIR}

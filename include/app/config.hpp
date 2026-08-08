@@ -36,6 +36,7 @@ struct RuntimeOptions {
     std::optional<std::filesystem::path> input_path{};
     std::optional<std::uint64_t> event_limit{};
     bool reference_only{false};
+    bool verilator_check{false};
     bool no_gpu{false};
     bool no_dashboard{false};
     bool benchmark{false};

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 
 #include "app/config.hpp"
 #include "market/order_book.hpp"
@@ -16,10 +17,13 @@ struct ReplayResult {
     double elapsed_seconds{};
     std::optional<market::BookError> error;
     std::optional<std::size_t> failure_index;
+    std::optional<std::string> divergence_message;
     market::BookSnapshot final_book{};
     market::FeatureVector final_features{};
     market::Signal final_signal{};
     market::ModelParameters final_parameters{};
+    std::uint64_t rtl_cycles{};
+    double rtl_wall_seconds{};
 };
 
 // Coordinates replay modes. Future RTL and GPU work enters here; the reference mode
@@ -30,6 +34,8 @@ public:
 
     [[nodiscard]] ReplayResult run_reference(std::span<const market::MarketEvent> events,
                                              std::optional<std::uint64_t> event_limit) const;
+    [[nodiscard]] ReplayResult run_verilator_check(std::span<const market::MarketEvent> events,
+                                                    std::optional<std::uint64_t> event_limit) const;
 
 private:
     Config config_;
