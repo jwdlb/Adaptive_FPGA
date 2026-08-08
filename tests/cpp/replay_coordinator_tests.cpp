@@ -12,7 +12,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "app/replay_coordinator.hpp"
+#include "replay_coordinator.hpp"
 #include "io/event_reader.hpp"
 #include "market/order_book.hpp"
 
@@ -74,7 +74,7 @@ std::vector<MarketEvent> deterministic_events(const std::size_t count) {
 
 // Run a full RTL-versus-reference replay and require a clean, complete match.
 void require_matching_replay(const std::vector<MarketEvent>& events) {
-    const market_engine::app::ReplayCoordinator coordinator(market_engine::app::Config{});
+    const market_engine::test_support::ReplayCoordinator coordinator(market_engine::app::Config{});
     const auto replay = coordinator.run_verilator_check(events, std::nullopt);
     REQUIRE_FALSE(replay.error.has_value());
     REQUIRE(replay.processed_events == events.size());

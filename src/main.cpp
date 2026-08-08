@@ -1,11 +1,12 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <string_view>
 
 #include "app/config.hpp"
+#include "app/live_coordinator.hpp"
 #include "app/opencl_devices.hpp"
-#include "app/replay_coordinator.hpp"
 #include "gpu/gpu_model.hpp"
 #include "io/event_reader.hpp"
 #include "market/order_book.hpp"
@@ -68,7 +69,7 @@ int main(int argc, char* argv[]) {
         }
         // GPU computation is introduced later in Phase 6. For now, a GPU selector
         // is an explicit setup check: prove which GPU future work will use.
-        if (options.select_gpu || options.gpu_index || options.gpu_name) {
+        if (!options.gpu_feature_upload && (options.select_gpu || options.gpu_index || options.gpu_name)) {
             const auto selected = market_engine::app::select_opencl_gpu(
                 options.gpu_index,
                 options.gpu_name ? std::optional<std::string_view>(*options.gpu_name) : std::nullopt);
@@ -79,43 +80,45 @@ int main(int argc, char* argv[]) {
         // This section prints information about the program and checks whether an input file was supplied.
         std::cout << "Adaptive FPGA–GPU Market Signal Engine\n";
         std::cout << market_engine::app::format_config(options.config);
-        const std::string_view mode = options.verilator_check ? "Verilator check" :
-                                      (options.reference_only ? "reference-only" : "C++ reference");
+        const std::string_view mode = options.gpu_feature_upload ? "live RTL + GPU feature upload" : "live RTL";
         std::cout << "Runtime mode: " << mode << '\n';
         if (!options.input_path) {
-            std::cout << "No input supplied; use --input PATH to replay CSV or MKT1 binary events.\n";
+            std::cout << "No input supplied; use --input PATH to provide CSV or MKT1 market events.\n";
             return 0;
         }
 
         // This reads the market events from the input file.
         const auto events = market_engine::io::read_events(*options.input_path);
-        // ReplayCoordinator owns the reference loop and optional C++/RTL comparison mode.
-        const market_engine::app::ReplayCoordinator coordinator(options.config);
-        const market_engine::app::ReplayResult replay = options.verilator_check
-            ? coordinator.run_verilator_check(events, options.event_limit)
-            : coordinator.run_reference(events, options.event_limit);
-        if (replay.error) {
-            std::cerr << "Replay error at event " << *replay.failure_index << ": "
-                      << (replay.divergence_message ? *replay.divergence_message
-                                                     : market_engine::market::to_string(*replay.error))
-                      << "; wrote failure_repro.csv\n";
+        std::optional<market_engine::gpu::GpuModel> gpu_model;
+        if (options.gpu_feature_upload) {
+            gpu_model.emplace(
+                options.gpu_index,
+                options.gpu_name ? std::optional<std::string_view>(*options.gpu_name) : std::nullopt);
+        }
+        const market_engine::app::LiveCoordinator coordinator(options.config);
+        const market_engine::app::LiveResult live = coordinator.run(
+            events, options.event_limit, gpu_model ? &*gpu_model : nullptr);
+        if (live.error) {
+            std::cerr << "Live RTL error at event " << *live.failure_index << ": "
+                      << market_engine::market::to_string(*live.error) << '\n';
             return 1;
         }
-
-        // Numerical fingerprint of the final order book, feature vector, signal, and model parameters.
         const auto checksum = market_engine::market::deterministic_checksum(
-            replay.final_book, replay.final_features, replay.final_signal, replay.final_parameters);
-        std::cout << "Replay metrics:\n"
-                  << "  processed events: " << replay.processed_events << '\n'
+            live.final_rtl.book, live.final_rtl.features, live.final_rtl.signal,
+            live.active_parameters);
+        std::cout << "Live metrics:\n"
+                  << "  processed events: " << live.processed_events << '\n'
                   << "  errors: 0\n"
                   << "  events/s: " << std::fixed << std::setprecision(0)
-                  << (replay.elapsed_seconds > 0.0 ? replay.processed_events / replay.elapsed_seconds : 0.0) << '\n'
-                  << "  RTL cycles: " << replay.rtl_cycles << '\n'
+                  << (live.elapsed_seconds > 0.0 ? live.processed_events / live.elapsed_seconds : 0.0) << '\n'
+                  << "  RTL cycles: " << live.rtl_cycles << '\n'
+                  << "  GPU feature batches submitted: " << live.gpu_feature_batches_submitted << '\n'
+                  << "  GPU feature uploads completed: " << live.gpu_feature_uploads_completed << '\n'
                   << "  final checksum: 0x" << std::hex << checksum << std::dec << '\n'
-                  << "  final signal: " << market_engine::market::to_string(replay.final_signal.action)
-                  << " (" << replay.final_signal.score << ")\n"
+                  << "  final signal: " << market_engine::market::to_string(live.final_rtl.signal.action)
+                  << " (" << live.final_rtl.signal.score << ")\n"
                   << "Final book:\n";
-        print_book(replay.final_book);
+        print_book(live.final_rtl.book);
         return 0;
     } catch (const market_engine::app::ConfigError& error) {
         std::cerr << "Configuration error: " << error.what() << '\n';

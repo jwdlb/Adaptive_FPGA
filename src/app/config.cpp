@@ -167,10 +167,9 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
                 throw ConfigError("--batch-size is too large");
             }
             options.config.feature_batch_size = static_cast<std::uint32_t>(value);
-        } else if (argument == "--reference-only") {
-            options.reference_only = true;
-        } else if (argument == "--verilator-check") {
-            options.verilator_check = true;
+        } else if (argument == "--live") {
+            // Live RTL processing is the normal application mode. The flag is
+            // accepted as an explicit spelling, but is not required.
         } else if (argument == "--no-gpu") {
             options.no_gpu = true;
         } else if (argument == "--gpu-index") {
@@ -196,6 +195,8 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
             options.select_gpu = true;
         } else if (argument == "--gpu-smoke-test") {
             options.gpu_smoke_test = true;
+        } else if (argument == "--gpu-feature-upload") {
+            options.gpu_feature_upload = true;
         } else if (argument == "--help" || argument == "-h" || argument == "--version") {
             continue;
         } else {
@@ -205,14 +206,12 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
     if (options.event_limit.has_value() && *options.event_limit == 0U) {
         throw ConfigError("--events must be positive");
     }
-    if (options.reference_only && options.verilator_check) {
-        throw ConfigError("--reference-only and --verilator-check cannot be used together");
-    }
     if (options.gpu_index && options.gpu_name) {
         throw ConfigError("--gpu-index and --gpu-name cannot be used together");
     }
-    if (options.no_gpu && (options.select_gpu || options.gpu_smoke_test || options.gpu_index || options.gpu_name)) {
-        throw ConfigError("--no-gpu cannot be used with GPU selection or --gpu-smoke-test");
+    if (options.no_gpu && (options.select_gpu || options.gpu_smoke_test || options.gpu_feature_upload ||
+                           options.gpu_index || options.gpu_name)) {
+        throw ConfigError("--no-gpu cannot be used with a GPU selection, --gpu-smoke-test, or --gpu-feature-upload");
     }
     validate_config(options.config);
     return options;
@@ -223,11 +222,10 @@ std::string usage(std::string_view executable_name) {
     return "Usage: " + std::string(executable_name) + " [options]\n"
            "  --config PATH              Configuration JSON (default: config/default.json)\n"
            "  --input PATH               CSV or MKT1 binary market-event input\n"
-           "  --events N                 Replay only the first N events\n"
+           "  --events N                 Process only the first N events\n"
            "  --seed N                   Override random seed\n"
            "  --batch-size N             Override GPU batch size\n"
-           "  --reference-only           Disable RTL/GPU runtime paths\n"
-           "  --verilator-check          Compare every replay event against the Verilated RTL pipeline\n"
+           "  --live                     Explicitly select normal RTL processing (the default)\n"
            "  --no-gpu                   Disable GPU runtime path\n"
            "  --gpu-index N              Select GPU N (or inspect its availability)\n"
            "  --gpu-name TEXT            Select a GPU by part of its name\n"
@@ -237,6 +235,7 @@ std::string usage(std::string_view executable_name) {
            "  --list-opencl-devices      Print detected OpenCL devices\n"
            "  --select-gpu               Select the first available GPU, or the requested GPU\n"
            "  --gpu-smoke-test           Run [1, 2, 3] -> [2, 4, 6] on the selected GPU\n"
+           "  --gpu-feature-upload       Upload completed RTL 32 x 8 feature batches to the selected GPU\n"
            "  --version                  Print program version\n"
            "  --help, -h                 Print this help\n";
 }

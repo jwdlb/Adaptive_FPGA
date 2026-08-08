@@ -15,6 +15,6 @@ repo_dir="$(cd -- "${script_dir}/.." && pwd)"
 # config/default.json are resolved relative to the project.
 cd "${repo_dir}"
 
-# Execute the compiled demo in reference-only mode. "$@" forwards every
-# additional argument supplied by the user to the demo unchanged.
-"${repo_dir}/build/market_engine_demo" --reference-only "$@"
+# Execute the compiled live application. "$@" forwards every additional
+# argument supplied by the user to the demo unchanged.
+"${repo_dir}/build/market_engine_demo" "$@"

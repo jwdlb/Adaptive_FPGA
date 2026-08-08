@@ -35,14 +35,13 @@ struct RuntimeOptions {
     std::filesystem::path config_path{"config/default.json"};
     std::optional<std::filesystem::path> input_path{};
     std::optional<std::uint64_t> event_limit{};
-    bool reference_only{false};
-    bool verilator_check{false};
     bool no_gpu{false};
     bool no_dashboard{false};
     bool benchmark{false};
     bool list_opencl_devices{false};
     bool select_gpu{false};
     bool gpu_smoke_test{false};
+    bool gpu_feature_upload{false};
     std::optional<std::uint32_t> gpu_index{};
     std::optional<std::string> gpu_name{};
 };

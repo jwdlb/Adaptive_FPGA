@@ -95,14 +95,14 @@ FetchContent_MakeAvailable(nlohmann_json Catch2)
 add_library(market_engine_app    # Separates reusable application code from the executable entry point.
     src/app/config.cpp
     src/app/opencl_devices.cpp
-    src/app/replay_coordinator.cpp
+    src/app/live_coordinator.cpp
     src/gpu/gpu_model.cpp
     src/gpu/gpu_protocol.cpp
     src/gpu/feature_buffers.cpp
+    src/gpu/feature_uploader.cpp
     src/io/event_reader.cpp
     src/market/event.cpp
     src/market/order_book.cpp
-    src/reference/reference_model.cpp
 )
 
 # Add the include directory to this target and targets that link to it.
@@ -210,14 +210,18 @@ if(BUILD_TESTING)
         tests/cpp/order_book_tests.cpp
         tests/cpp/reference_model_tests.cpp
         tests/cpp/replay_coordinator_tests.cpp
+        tests/cpp/live_coordinator_tests.cpp
         tests/cpp/gpu_model_tests.cpp
         tests/cpp/gpu_protocol_tests.cpp
         tests/cpp/feature_batch_tests.cpp
         tests/cpp/feature_buffers_tests.cpp
+        tests/support/replay_coordinator.cpp
+        src/reference/reference_model.cpp
     )
 
     # Link the tests with the application library and Catch2's supplied main().
     target_link_libraries(market_engine_tests PRIVATE market_engine_app Catch2::Catch2WithMain)
+    target_include_directories(market_engine_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/support)
     # Fixture tests need a stable source-tree location even when CTest runs from build/.
     target_compile_definitions(market_engine_tests PRIVATE MARKET_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 

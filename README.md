@@ -1,15 +1,15 @@
 # Adaptive FPGA–GPU Market Signal Engine
 
-A correctness-first research prototype for market-event replay, a synthesizable
-SystemVerilog market pipeline simulated with Verilator, batched OpenCL online
-learning, and browser observability.
+A correctness-first research prototype with a normal event-processing path, a
+synthesizable SystemVerilog market pipeline simulated with Verilator, GPU
+feature uploads through OpenCL, and separate C++/RTL test support.
 
 ## Current status
 
-The C++ reference path is implemented: protocol codecs, fixed-point arithmetic,
-a ten-level order book, feature calculation, strategy evaluation, replay
-metrics, deterministic fixtures, and a seeded event generator. RTL, GPU
-learning, and the dashboard remain planned.
+The normal application processes events through simulated RTL and can upload
+valid 32 x 8 feature batches to a selected GPU. The C++ reference model and
+replay comparison harness are test-only. GPU learning/model updates and the
+dashboard remain planned.
 
 ## Prerequisites
 
@@ -36,13 +36,14 @@ first configure.
 ./build/market_engine_demo --gpu-smoke-test
 ```
 
-Generate a deterministic stream and replay it through the C++ reference:
+Generate a deterministic stream and process it through the normal RTL path:
 
 ```bash
 python3 python/generate_events.py --output data/events.csv --seed 42 --events 1000000
-./build/market_engine_demo --reference-only --input data/events.csv
+./build/market_engine_demo --input data/events.csv
 ```
 
-Use `--events N` to replay only the first `N` records. On an order-book replay
-failure, the demo writes `failure_repro.csv` containing the failing event and
-up to 100 preceding events. RTL/GPU processing is not implemented yet.
+Use `--events N` to process only the first `N` records. Add
+`--gpu-feature-upload` on a machine with a selected OpenCL GPU to send valid
+feature batches to it. `ctest --test-dir build` runs the separate C++/RTL
+comparison replay tests.
