@@ -13,6 +13,18 @@ module market_pipeline_cpp_wrapper (
   input logic side,
   input logic signed [31:0] price_ticks,
   input logic [31:0] quantity,
+  // The normal runner keeps this high. The future streaming worker lowers it
+  // when its host SPSC ring is full, causing one compact result to remain held.
+  input logic result_ready,
+  output logic result_valid,
+  output logic [63:0] result_event_index,
+  output logic [63:0] result_timestamp_ns,
+  output market_types_pkg::book_error_t result_error,
+  output logic signed [31:0] result_feature0, output logic signed [31:0] result_feature1,
+  output logic signed [31:0] result_feature2, output logic signed [31:0] result_feature3,
+  output logic signed [31:0] result_feature4, output logic signed [31:0] result_feature5,
+  output logic signed [31:0] result_feature6, output logic signed [31:0] result_feature7,
+  output logic result_feature_valid,
   output logic event_done,
   output market_types_pkg::book_error_t event_error,
   output logic signed [63:0] order_flow_delta,
@@ -51,6 +63,7 @@ module market_pipeline_cpp_wrapper (
   price_level_t bid_snapshot [0:BOOK_DEPTH-1];
   price_level_t ask_snapshot [0:BOOK_DEPTH-1];
   logic signed [31:0] feature_values [0:FEATURE_COUNT-1];
+  logic signed [31:0] result_feature_values [0:FEATURE_COUNT-1];
 
   always_comb begin
     in_event = '{timestamp_ns: timestamp_ns, event_type: event_type_t'(event_type),
@@ -61,9 +74,14 @@ module market_pipeline_cpp_wrapper (
     ask_level5 = ask_snapshot[5]; ask_level6 = ask_snapshot[6]; ask_level7 = ask_snapshot[7]; ask_level8 = ask_snapshot[8]; ask_level9 = ask_snapshot[9];
     feature0 = feature_values[0]; feature1 = feature_values[1]; feature2 = feature_values[2]; feature3 = feature_values[3];
     feature4 = feature_values[4]; feature5 = feature_values[5]; feature6 = feature_values[6]; feature7 = feature_values[7];
+    result_feature0 = result_feature_values[0]; result_feature1 = result_feature_values[1];
+    result_feature2 = result_feature_values[2]; result_feature3 = result_feature_values[3];
+    result_feature4 = result_feature_values[4]; result_feature5 = result_feature_values[5];
+    result_feature6 = result_feature_values[6]; result_feature7 = result_feature_values[7];
   end
 
-  // The real market pipeline remains responsible for all market, feature, signal,
-  // and atomic parameter-bank behaviour.
-  market_pipeline dut (.*);
+  // The stream adapter preserves the real market pipeline's market, feature,
+  // signal, and atomic parameter-bank behaviour while adding one held compact
+  // result for the future C++ SPSC streaming hand-off.
+  market_stream_adapter dut (.*);
 endmodule

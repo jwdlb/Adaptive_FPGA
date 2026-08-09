@@ -63,6 +63,10 @@ public:
         dut_.side = 0;
         dut_.price_ticks = 0;
         dut_.quantity = 0;
+        // The existing synchronous runner reads every completed result straight
+        // away, so it permanently accepts the adapter's one held result. The
+        // later streaming worker will drive this from SPSC-ring capacity instead.
+        dut_.result_ready = 1;
         dut_.param_write_valid = 0;  // no parameter write
         dut_.param_write_index = 0;
         dut_.param_write_value = 0;

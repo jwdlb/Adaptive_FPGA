@@ -71,6 +71,7 @@ if(VERILATOR_EXECUTABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/rtl/feature_engine.sv
         ${CMAKE_CURRENT_SOURCE_DIR}/rtl/strategy_model.sv
         ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_pipeline.sv
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtl/market_stream_adapter.sv
     )
 endif()
 
@@ -286,6 +287,24 @@ if(VERILATOR_EXECUTABLE)
         COMMAND ${CMAKE_BINARY_DIR}/verilator_order_book_differential/Vorder_book_cpp_wrapper
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Building and running the one-million-event C++/RTL order-book differential test"
+    )
+
+    # Prove the streaming adapter's one held result remains stable while the
+    # host side is not ready, then releases exactly once when ready returns.
+    add_custom_target(rtl_stream_adapter_tests
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${RTL_CCACHE_DIR} ${RTL_CCACHE_TEMPDIR}
+        COMMAND ${CMAKE_COMMAND} -E env
+            CCACHE_DIR=${RTL_CCACHE_DIR}
+            CCACHE_TEMPDIR=${RTL_CCACHE_TEMPDIR}
+            ${VERILATOR_EXECUTABLE}
+            --binary --timing --assert --Wall -Wno-fatal
+            --top-module market_stream_adapter_tb
+            --Mdir ${CMAKE_BINARY_DIR}/verilator_market_stream_adapter_tb
+            ${RTL_COMMON_SOURCES}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tb/market_stream_adapter_tb.sv
+        COMMAND ${CMAKE_BINARY_DIR}/verilator_market_stream_adapter_tb/Vmarket_stream_adapter_tb
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Building and running held-result RTL streaming-adapter tests"
     )
 
     # Verilator generates the Vmarket_pipeline_cpp_wrapper header at build time, so
