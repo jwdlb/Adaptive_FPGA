@@ -6,6 +6,7 @@
 
 #include "app/config.hpp"
 #include "app/live_coordinator.hpp"
+#include "app/model_store.hpp"
 #include "app/opencl_devices.hpp"
 #include "gpu/gpu_model.hpp"
 #include "io/event_reader.hpp"
@@ -89,20 +90,27 @@ int main(int argc, char* argv[]) {
 
         // This reads the market events from the input file.
         const auto events = market_engine::io::read_events(*options.input_path);
+        std::optional<market_engine::market::ModelParameters> initial_model;
+        if (options.model_in && !options.reset_model) initial_model = market_engine::app::load_model_file(*options.model_in);
         std::optional<market_engine::gpu::GpuModel> gpu_model;
         if (options.gpu_feature_upload) {
             gpu_model.emplace(
                 options.gpu_index,
                 options.gpu_name ? std::optional<std::string_view>(*options.gpu_name) : std::nullopt);
+            if (initial_model) gpu_model->set_training_model(*initial_model);
         }
         const market_engine::app::LiveCoordinator coordinator(options.config);
         const market_engine::app::LiveResult live = coordinator.run(
-            events, options.event_limit, gpu_model ? &*gpu_model : nullptr);
+            events, options.event_limit, gpu_model ? &*gpu_model : nullptr, initial_model,
+            options.model_autosave ? [path = *options.model_autosave](const auto& model) {
+                market_engine::app::save_model_file_atomically(path, model);
+            } : std::function<void(const market_engine::market::ModelParameters&)>{});
         if (live.error) {
             std::cerr << "Live RTL error at event " << *live.failure_index << ": "
                       << market_engine::market::to_string(*live.error) << '\n';
             return 1;
         }
+        if (options.model_out) market_engine::app::save_model_file_atomically(*options.model_out, live.active_parameters);
         const auto checksum = market_engine::market::deterministic_checksum(
             live.final_rtl.book, live.final_rtl.features, live.final_rtl.signal,
             live.active_parameters);

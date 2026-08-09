@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 
@@ -55,7 +56,9 @@ public:
 
     [[nodiscard]] LiveResult run(std::span<const market::MarketEvent> events,
                                  std::optional<std::uint64_t> event_limit,
-                                 gpu::GpuModel* gpu_model = nullptr) const;
+                                 gpu::GpuModel* gpu_model = nullptr,
+                                 std::optional<market::ModelParameters> initial_model = std::nullopt,
+                                 std::function<void(const market::ModelParameters&)> model_applied = {}) const;
 
 private:
     Config config_;

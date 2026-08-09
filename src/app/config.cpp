@@ -157,6 +157,14 @@ RuntimeOptions parse_command_line(int argc, char* argv[]) {
             ++index;
         } else if (argument == "--input") {
             options.input_path = require_value(index, argc, argv, argument);
+        } else if (argument == "--model-in") {
+            options.model_in = require_value(index, argc, argv, argument);
+        } else if (argument == "--model-out") {
+            options.model_out = require_value(index, argc, argv, argument);
+        } else if (argument == "--model-autosave") {
+            options.model_autosave = require_value(index, argc, argv, argument);
+        } else if (argument == "--reset-model") {
+            options.reset_model = true;
         } else if (argument == "--events") {
             options.event_limit = parse_unsigned_option(argument, require_value(index, argc, argv, argument));
         } else if (argument == "--seed") {
@@ -222,6 +230,10 @@ std::string usage(std::string_view executable_name) {
     return "Usage: " + std::string(executable_name) + " [options]\n"
            "  --config PATH              Configuration JSON (default: config/default.json)\n"
            "  --input PATH               CSV or MKT1 binary market-event input\n"
+           "  --model-in PATH            Load a versioned JSON starting model\n"
+           "  --model-out PATH           Atomically save the final active model\n"
+           "  --model-autosave PATH      Atomically checkpoint each accepted model update\n"
+           "  --reset-model              Ignore --model-in and use configured defaults\n"
            "  --events N                 Process only the first N events\n"
            "  --seed N                   Override random seed\n"
            "  --batch-size N             Override GPU batch size\n"

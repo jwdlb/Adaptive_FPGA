@@ -125,6 +125,8 @@ public:
     std::size_t mapped_stream_rows{0};
     std::size_t stream_capacity_rows{0};
     std::array<std::int32_t, market::FeatureVector::kFeatureCount + 2U> stream_update_values{};
+    std::array<std::int32_t, market::FeatureVector::kFeatureCount + 2U> configured_training_model{};
+    bool has_configured_training_model{false};
     std::array<std::int64_t, 3U> stream_training_metrics{};
     std::optional<std::uint64_t> pending_stream_update_version{};
     std::optional<std::chrono::steady_clock::time_point> training_started{};
@@ -378,6 +380,7 @@ public:
         stream_update_values.fill(0);
         stream_update_values[market::FeatureVector::kFeatureCount] = 16384;
         stream_update_values[market::FeatureVector::kFeatureCount + 1U] = -16384;
+        if (has_configured_training_model) stream_update_values = configured_training_model;
         check_opencl(clEnqueueWriteBuffer(queue, stream_update_buffer, CL_TRUE, 0,
                                           stream_update_values.size() * sizeof(std::int32_t),
                                           stream_update_values.data(), 0, nullptr, nullptr),
@@ -492,6 +495,18 @@ public:
             0, nullptr, nullptr, &status));
         check_opencl(status, "mapping GPU training-label buffer");
         return {.features = features, .labels = {mapped_stream_labels, rows}};
+    }
+
+    void set_training_model(const market::ModelParameters& model) {
+        if (mapped_stream_values != nullptr || mapped_stream_labels != nullptr || pending_stream_update_version)
+            throw std::logic_error("cannot replace GPU training model while a batch is active");
+        if (model.model_version == 0U || model.buy_threshold <= model.sell_threshold)
+            throw std::invalid_argument("invalid initial GPU training model");
+        configured_training_model.fill(0);
+        for (std::size_t index = 0; index < model.weights.size(); ++index) configured_training_model[index] = model.weights[index];
+        configured_training_model[model.weights.size()] = model.buy_threshold;
+        configured_training_model[model.weights.size() + 1U] = model.sell_threshold;
+        has_configured_training_model = true;
     }
 
     void submit_training_batch(const std::uint64_t version, const std::int32_t learning_rate_q16, const std::int32_t l2_q16) {
@@ -617,6 +632,15 @@ GpuModel& GpuModel::operator=(GpuModel&&) noexcept = default;
 // Return the human-readable details of the GPU selected during construction.
 const app::OpenclDeviceInfo& GpuModel::device() const noexcept {
     return impl_->selected_device;
+}
+
+void GpuModel::set_training_model(const market::ModelParameters& model) {
+#if !MARKET_ENGINE_HAS_OPENCL
+    static_cast<void>(model);
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    impl_->set_training_model(model);
+#endif
 }
 
 // Run the reusable doubling kernel, or explain that this build has no OpenCL support.

@@ -30,3 +30,23 @@ TEST_CASE("live coordinator processes RTL events without a reference comparison"
     SKIP("Verilator is unavailable in this build");
 #endif
 }
+
+TEST_CASE("live coordinator activates a loaded model before processing events", "[live][verilator]") {
+#if MARKET_ENGINE_VERILATOR_AVAILABLE
+    const std::filesystem::path input = std::filesystem::path(MARKET_ENGINE_SOURCE_DIR) /
+        "tests" / "fixtures" / "balanced_book.csv";
+    const auto events = market_engine::io::read_events(input);
+    market_engine::market::ModelParameters initial{};
+    initial.weights[0] = 123;
+    initial.buy_threshold = 16384;
+    initial.sell_threshold = -16384;
+    initial.model_version = 9U;
+    const market_engine::app::LiveCoordinator coordinator(market_engine::app::Config{});
+    const auto result = coordinator.run(events, std::nullopt, nullptr, initial);
+    REQUIRE_FALSE(result.error.has_value());
+    REQUIRE(result.active_parameters.weights == initial.weights);
+    REQUIRE(result.active_parameters.model_version == initial.model_version);
+#else
+    SKIP("Verilator is unavailable in this build");
+#endif
+}

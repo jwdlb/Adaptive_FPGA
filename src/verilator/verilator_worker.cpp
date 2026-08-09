@@ -14,10 +14,11 @@ VerilatorWorker::VerilatorWorker(
     market::ModelParameters initial_parameters,
     app::SpscRingBuffer<RtlStreamResult>& result_ring,
     gpu::ModelUpdateMailbox& update_mailbox,
-    const std::chrono::steady_clock::duration backpressure_timeout)
+    const std::chrono::steady_clock::duration backpressure_timeout,
+    std::function<void(const market::ModelParameters&)> model_applied)
     : events_(events), result_ring_(result_ring), update_mailbox_(update_mailbox),
       runner_(clock_period_ns), active_parameters_(std::move(initial_parameters)),
-      backpressure_timeout_(backpressure_timeout) {
+      backpressure_timeout_(backpressure_timeout), model_applied_(std::move(model_applied)) {
     if (backpressure_timeout_ <= std::chrono::steady_clock::duration::zero()) {
         throw std::invalid_argument("RTL result backpressure timeout must be positive");
     }
@@ -39,6 +40,7 @@ void VerilatorWorker::apply_waiting_model_update() {
     runner_.write_model_parameters(active_parameters_);
     active_parameters_.update_count = runner_.latest().update_count;
     ++metrics_.model_updates_applied;
+    if (model_applied_) model_applied_(active_parameters_);
 }
 
 void VerilatorWorker::run() {

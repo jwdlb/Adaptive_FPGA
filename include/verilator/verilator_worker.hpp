@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 
 #include "app/spsc_ring_buffer.hpp"
@@ -36,7 +37,8 @@ public:
                     app::SpscRingBuffer<RtlStreamResult>& result_ring,
                     gpu::ModelUpdateMailbox& update_mailbox,
                     std::chrono::steady_clock::duration backpressure_timeout =
-                        kDefaultResultBackpressureTimeout);
+                        kDefaultResultBackpressureTimeout,
+                    std::function<void(const market::ModelParameters&)> model_applied = {});
 
     VerilatorWorker(const VerilatorWorker&) = delete;
     VerilatorWorker& operator=(const VerilatorWorker&) = delete;
@@ -72,6 +74,7 @@ private:
     std::atomic_bool stop_requested_{false};
     std::atomic_bool stream_drained_{false};
     VerilatorWorkerMetrics metrics_{};
+    std::function<void(const market::ModelParameters&)> model_applied_;
 };
 
 }  // namespace market_engine::verilator

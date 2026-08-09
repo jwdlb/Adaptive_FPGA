@@ -35,6 +35,10 @@ struct RuntimeOptions {
     std::filesystem::path config_path{"config/default.json"};
     std::optional<std::filesystem::path> input_path{};
     std::optional<std::uint64_t> event_limit{};
+    std::optional<std::filesystem::path> model_in{};
+    std::optional<std::filesystem::path> model_out{};
+    std::optional<std::filesystem::path> model_autosave{};
+    bool reset_model{false};
     bool no_gpu{false};
     bool no_dashboard{false};
     bool benchmark{false};

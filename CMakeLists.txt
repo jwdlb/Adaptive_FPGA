@@ -97,6 +97,7 @@ add_library(market_engine_app    # Separates reusable application code from the 
     src/app/config.cpp
     src/app/opencl_devices.cpp
     src/app/live_coordinator.cpp
+    src/app/model_store.cpp
     src/gpu/gpu_model.cpp
     src/gpu/regression_oracle.cpp
     src/gpu/gpu_worker.cpp
@@ -211,6 +212,7 @@ if(BUILD_TESTING)
     # Create the test executable from the listed test source files.
     add_executable(market_engine_tests
         tests/cpp/config_tests.cpp
+        tests/cpp/model_store_tests.cpp
         tests/cpp/protocol_tests.cpp
         tests/cpp/order_book_tests.cpp
         tests/cpp/reference_model_tests.cpp

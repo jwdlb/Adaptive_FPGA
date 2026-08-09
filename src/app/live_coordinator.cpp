@@ -49,9 +49,11 @@ inline constexpr std::size_t kLiveResultRingCapacity{1024U};
 
 LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> events,
                                 const std::optional<std::uint64_t> event_limit,
-                                gpu::GpuModel* const gpu_model) const {
+                                gpu::GpuModel* const gpu_model,
+                                const std::optional<market::ModelParameters> initial_model,
+                                std::function<void(const market::ModelParameters&)> model_applied) const {
 #if MARKET_ENGINE_VERILATOR_AVAILABLE
-    const market::ModelParameters initial_parameters = initial_model_parameters(config_);
+    const market::ModelParameters initial_parameters = initial_model.value_or(initial_model_parameters(config_));
     const std::size_t count = event_limit ?
         std::min(events.size(), static_cast<std::size_t>(*event_limit)) : events.size();
     const std::span<const market::MarketEvent> selected_events = events.first(count);
@@ -62,7 +64,8 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
     app::SpscRingBuffer<verilator::RtlStreamResult> result_ring(kLiveResultRingCapacity);
     gpu::ModelUpdateMailbox update_mailbox;
     verilator::VerilatorWorker rtl_worker(selected_events, config_.clock_period_ns,
-                                          initial_parameters, result_ring, update_mailbox);
+                                          initial_parameters, result_ring, update_mailbox,
+                                          verilator::kDefaultResultBackpressureTimeout, std::move(model_applied));
 
     LiveResult result{};
     const auto started = std::chrono::steady_clock::now();
@@ -85,7 +88,7 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
         // of the ring immediately, so it never holds a ring slot while OpenCL
         // runs. Its complete replacement model returns through update_mailbox.
         gpu::GpuWorker gpu_worker(*gpu_model, result_ring, update_mailbox,
-                                  config_.feature_batch_size, 2U,
+                                  config_.feature_batch_size, initial_parameters.model_version + 1U,
                                   config_.label_horizon_events, 1,
                                   market::fixed_point::from_double(config_.learning_rate),
                                   market::fixed_point::from_double(config_.l2_regularisation));

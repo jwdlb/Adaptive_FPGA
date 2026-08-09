@@ -80,6 +80,8 @@ public:
     GpuModel& operator=(GpuModel&&) noexcept;
 
     [[nodiscard]] const app::OpenclDeviceInfo& device() const noexcept;
+    // Seed the device-resident learner before its first training batch.
+    void set_training_model(const market::ModelParameters& model);
 
     // Send values to the GPU, run the tiny double_values kernel, and wait only
     // for this operation's completion event before returning the result.
