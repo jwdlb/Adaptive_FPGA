@@ -50,6 +50,11 @@ public:
     // clocks; it never allows an already held RTL result to be overwritten.
     void request_stop() noexcept;
 
+    // True once every offered event has been accepted and every corresponding
+    // result has entered the SPSC ring. The worker can then remain alive only to
+    // apply a final GPU ModelUpdate before the mailbox is closed.
+    [[nodiscard]] bool stream_drained() const noexcept;
+
     // Read these only after run() has returned or the worker thread has joined.
     [[nodiscard]] VerilatorWorkerMetrics metrics() const noexcept;
     [[nodiscard]] const market::ModelParameters& active_parameters() const noexcept;
@@ -65,6 +70,7 @@ private:
     market::ModelParameters active_parameters_{};
     std::chrono::steady_clock::duration backpressure_timeout_;
     std::atomic_bool stop_requested_{false};
+    std::atomic_bool stream_drained_{false};
     VerilatorWorkerMetrics metrics_{};
 };
 

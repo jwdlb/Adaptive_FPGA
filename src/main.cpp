@@ -67,8 +67,8 @@ int main(int argc, char* argv[]) {
             if (result.device) std::cout << market_engine::app::format_opencl_device(*result.device);
             return 0;
         }
-        // GPU computation is introduced later in Phase 6. For now, a GPU selector
-        // is an explicit setup check: prove which GPU future work will use.
+        // Without the live GPU-worker option, a selector is an explicit setup
+        // check: prove which GPU the normal streaming path will use.
         if (!options.gpu_feature_upload && (options.select_gpu || options.gpu_index || options.gpu_name)) {
             const auto selected = market_engine::app::select_opencl_gpu(
                 options.gpu_index,
@@ -80,7 +80,7 @@ int main(int argc, char* argv[]) {
         // This section prints information about the program and checks whether an input file was supplied.
         std::cout << "Adaptive FPGA–GPU Market Signal Engine\n";
         std::cout << market_engine::app::format_config(options.config);
-        const std::string_view mode = options.gpu_feature_upload ? "live RTL + GPU feature upload" : "live RTL";
+        const std::string_view mode = options.gpu_feature_upload ? "live RTL + GPU worker" : "live RTL";
         std::cout << "Runtime mode: " << mode << '\n';
         if (!options.input_path) {
             std::cout << "No input supplied; use --input PATH to provide CSV or MKT1 market events.\n";
@@ -112,8 +112,12 @@ int main(int argc, char* argv[]) {
                   << "  events/s: " << std::fixed << std::setprecision(0)
                   << (live.elapsed_seconds > 0.0 ? live.processed_events / live.elapsed_seconds : 0.0) << '\n'
                   << "  RTL cycles: " << live.rtl_cycles << '\n'
-                  << "  GPU feature batches submitted: " << live.gpu_feature_batches_submitted << '\n'
-                  << "  GPU feature uploads completed: " << live.gpu_feature_uploads_completed << '\n'
+                  << "  RTL stream results published: " << live.rtl_stream_results_published << '\n'
+                  << "  GPU RTL results consumed: " << live.gpu_rtl_results_consumed << '\n'
+                  << "  GPU valid feature rows copied: " << live.gpu_valid_feature_rows_copied << '\n'
+                  << "  GPU batches submitted: " << live.gpu_batches_submitted << '\n'
+                  << "  GPU model updates published: " << live.gpu_model_updates_published << '\n'
+                  << "  RTL model updates applied: " << live.rtl_model_updates_applied << '\n'
                   << "  final checksum: 0x" << std::hex << checksum << std::dec << '\n'
                   << "  final signal: " << market_engine::market::to_string(live.final_rtl.signal.action)
                   << " (" << live.final_rtl.signal.score << ")\n"

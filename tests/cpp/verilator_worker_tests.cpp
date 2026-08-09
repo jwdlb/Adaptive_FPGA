@@ -37,6 +37,9 @@ TEST_CASE("dedicated RTL worker streams directly into SPSC slots and applies mai
     update.buy_threshold = 0;
     update.sell_threshold = -market::fixed_point::kOne;
     mailbox.publish(update);
+    // This test has no GPU thread that will close the mailbox later. Closing it
+    // now tells the worker this is the complete finite update stream.
+    mailbox.close();
 
     // Capacity one deliberately forces the producer and consumer to coordinate:
     // the worker cannot publish the second result until this test releases the

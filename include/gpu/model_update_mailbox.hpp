@@ -23,9 +23,16 @@ public:
 
     [[nodiscard]] bool has_update() const;
 
+    // Say that the GPU side will publish no more updates for this live run.
+    // Already published data remains available through take(). Closing lets the
+    // RTL worker apply the final update and then exit cleanly.
+    void close();
+    [[nodiscard]] bool closed() const;
+
 private:
     mutable std::mutex mutex_;
     std::optional<ModelUpdate> latest_update_;
+    bool closed_{false};
 };
 
 }  // namespace market_engine::gpu

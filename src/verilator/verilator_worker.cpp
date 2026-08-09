@@ -45,13 +45,25 @@ void VerilatorWorker::run() {
     std::size_t next_event{};
     std::optional<std::chrono::steady_clock::time_point> backpressure_started;
 
-    // Keep ticking until every CSV event has crossed the input handshake and the
-    // final held RTL result has crossed the output handshake. GpuWorker may keep
-    // processing already-published SPSC values after this method returns.
-    while (!stop_requested_.load(std::memory_order_relaxed) &&
-           (next_event < events_.size() ||
+    // First drain the input stream into the result ring. After that, remain alive
+    // until the GPU worker closes its mailbox: the final full GPU batch may only
+    // finish after the final RTL result was published, and its replacement model
+    // still deserves one atomic RTL apply before this worker exits.
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+        const bool stream_has_work =
+            next_event < events_.size() ||
             metrics_.stream_results_published < metrics_.input_events_accepted ||
-            runner_.stream_result_valid())) {
+            runner_.stream_result_valid();
+        if (!stream_has_work) {
+            stream_drained_.store(true, std::memory_order_release);
+            apply_waiting_model_update();
+            if (update_mailbox_.closed() && !update_mailbox_.has_update()) break;
+            // Keep advancing the simulation while waiting for the separate GPU
+            // thread, so a model-bank commit can complete normally.
+            static_cast<void>(runner_.step(nullptr, false));
+            std::this_thread::yield();
+            continue;
+        }
         RtlStreamResult* reserved_result_slot = nullptr;
         bool accept_stream_result = false;
 
@@ -120,11 +132,16 @@ void VerilatorWorker::run() {
     if (backpressure_started) {
         metrics_.result_backpressure_time += std::chrono::steady_clock::now() - *backpressure_started;
     }
+    stream_drained_.store(true, std::memory_order_release);
     metrics_.rtl_cycles = runner_.metrics().cycles;
 }
 
 void VerilatorWorker::request_stop() noexcept {
     stop_requested_.store(true, std::memory_order_relaxed);
+}
+
+bool VerilatorWorker::stream_drained() const noexcept {
+    return stream_drained_.load(std::memory_order_acquire);
 }
 
 VerilatorWorkerMetrics VerilatorWorker::metrics() const noexcept { return metrics_; }

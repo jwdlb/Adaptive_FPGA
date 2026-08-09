@@ -152,6 +152,10 @@ TEST_CASE("model update mailbox keeps only the newest complete update", "[stream
     ModelUpdate invalid = update(5U);
     invalid.buy_threshold = invalid.sell_threshold;
     REQUIRE_THROWS_AS(mailbox.publish(invalid), std::invalid_argument);
+
+    mailbox.close();
+    REQUIRE(mailbox.closed());
+    REQUIRE_THROWS_AS(mailbox.publish(update(5U)), std::logic_error);
 }
 
 TEST_CASE("RTL stream result keeps compact event control and feature data", "[streaming][rtl]") {

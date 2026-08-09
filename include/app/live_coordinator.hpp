@@ -1,7 +1,7 @@
 // This file declares the normal RTL application path. LiveCoordinator accepts
-// market events from any source, sends them to the RTL pipeline, and optionally
-// sends the RTL's valid feature snapshots to the reusable GPU uploader. It does
-// not run the C++ reference model or compare two implementations.
+// market events from any source, starts the dedicated RTL worker, and optionally
+// starts the separate GPU worker. It does not run the C++ reference model or
+// compare two implementations.
 #pragma once
 
 #include <cstddef>
@@ -30,11 +30,16 @@ struct LiveResult {
     market::ModelParameters active_parameters{};
     std::uint64_t rtl_cycles{};
     double rtl_wall_seconds{};
-    std::size_t gpu_feature_batches_submitted{};
-    std::size_t gpu_feature_uploads_completed{};
+    std::size_t rtl_stream_results_published{};
+    std::size_t gpu_rtl_results_consumed{};
+    std::size_t gpu_valid_feature_rows_copied{};
+    std::size_t gpu_batches_submitted{};
+    std::size_t gpu_model_updates_published{};
+    std::size_t rtl_model_updates_applied{};
 };
 
-// Drives the operational path: event source -> RTL -> optional GPU upload.
+// Drives the operational path: event source -> dedicated RTL worker -> optional
+// separate GPU worker -> newest-model mailbox -> RTL worker.
 // Today the RTL is simulated through Verilator; a future physical-FPGA runner
 // can provide the same event/result boundary without changing this coordinator.
 class LiveCoordinator {

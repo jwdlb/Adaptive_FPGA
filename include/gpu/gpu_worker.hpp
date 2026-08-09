@@ -40,6 +40,10 @@ public:
     // state. On an orderly stop, a partial mapped batch is discarded, while an
     // already submitted GPU update is allowed to finish and reach the mailbox.
     void run();
+    // Tell the worker that the RTL producer has published its final result. It
+    // then drains every remaining ring value, completes an already submitted GPU
+    // update, discards only a short final batch, and returns from run().
+    void request_input_complete() noexcept;
     void request_stop() noexcept;
 
     // Read only after run() has returned or the GPU thread has joined.
@@ -58,6 +62,7 @@ private:
     std::span<std::int32_t> mapped_values_{};
     std::size_t mapped_row_count_{};
     bool model_update_in_flight_{false};
+    std::atomic_bool input_complete_{false};
     std::atomic_bool stop_requested_{false};
     GpuWorkerMetrics metrics_{};
 };

@@ -66,7 +66,7 @@ void GpuWorker::poll_model_update() {
 }
 
 void GpuWorker::run() {
-    while (!stop_requested_.load(std::memory_order_relaxed) || model_update_in_flight_) {
+    while (true) {
         bool made_progress = false;
 
         if (model_update_in_flight_) {
@@ -96,8 +96,26 @@ void GpuWorker::run() {
             }
         }
 
+        // Only the coordinator sends this after VerilatorWorker has published
+        // its final result. At that point an empty ring cannot receive more
+        // rows, so a partial batch is deliberately discarded and the worker can
+        // exit after its last full-batch ModelUpdate has been published.
+        if (input_complete_.load(std::memory_order_relaxed) && result_ring_.empty() &&
+            !model_update_in_flight_) {
+            if (!mapped_values_.empty()) {
+                model_.discard_stream_feature_rows();
+                mapped_values_ = {};
+                mapped_row_count_ = 0U;
+            }
+            break;
+        }
+
         if (!made_progress) std::this_thread::yield();
     }
+}
+
+void GpuWorker::request_input_complete() noexcept {
+    input_complete_.store(true, std::memory_order_relaxed);
 }
 
 void GpuWorker::request_stop() noexcept {

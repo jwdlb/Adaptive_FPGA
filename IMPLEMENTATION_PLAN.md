@@ -586,6 +586,9 @@ through an atomic commit.
 
 ### 6.12 Establish Level 2 host-side streaming primitives
 
+**Current status: implemented.** The SPSC ring, compact `RtlStreamResult`, and
+newest-value `ModelUpdateMailbox` are now the live transport primitives.
+
 Add a compact `RtlStreamResult` containing event metadata, event error, and the
 same `FeatureVector` currently used to build GPU snapshots. Add a fixed-capacity
 single-producer/single-consumer ring for compact RTL results, with atomic read/write
@@ -605,6 +608,10 @@ replacement, stale-version, and compact-result tests pass under ThreadSanitizer 
 available.
 
 ### 6.13 Add a stable RTL result handshake and a stepping runner
+
+**Current status: implemented.** `market_stream_adapter` holds one stable RTL
+result until the host accepts it, and `VerilatorRunner` exposes a one-clock
+stepping interface around that valid/ready handshake.
 
 Wrap the existing `market_pipeline` result with one compact output register and a
 valid/ready handshake. The register holds its complete result stable until C++
@@ -627,6 +634,10 @@ support uses stepping.
 
 ### 6.14 Run RTL in its own dedicated thread
 
+**Current status: implemented.** `VerilatorWorker` is the sole Verilator owner;
+the normal `LiveCoordinator` starts it in its own thread and no longer uses the
+old per-event blocking `process()` live path.
+
 Add a `VerilatorWorker` which is the only code allowed to access
 `VerilatorRunner` and the only thread that advances the simulated RTL clock. It feeds
 events directly from an immutable `span<const MarketEvent>` whenever the core input
@@ -647,6 +658,12 @@ clocking while input is temporarily unavailable and while the GPU worker is busy
 
 ### 6.15 Fill configurable OpenCL batches and prove GPU-to-RTL hand-off
 
+**Current status: implemented in code; GPU-hardware proof is pending the RTX
+4060 machine.** `GpuWorker` directly fills mapped configurable `[N][8]` OpenCL
+memory, publishes the Phase 6 deterministic complete replacement to the
+mailbox, and `VerilatorWorker` remains alive long enough to apply the final
+mailbox update before shutdown.
+
 Keep the feature width fixed at eight, but make the number of training rows `N`
 runtime-configurable (default 1,024). The GPU worker fills contiguous mapped OpenCL
 memory in `[sample][feature]` order directly from valid ring results; no separate
@@ -665,6 +682,11 @@ parameters; a newer unread update replaces an older mailbox value; configurable
 batch sizes preserve row/feature order and never overwrite GPU-owned memory.
 
 ### 6.16 Complete streaming proof and documentation
+
+**Current status: partially complete.** The normal live command reports stream,
+GPU, and applied-model metrics, and CPU-only streaming tests pass. The remaining
+proof is a GPU-machine end-to-end long replay plus the detailed occupancy and
+blocked-time reporting listed below.
 
 Run fixture, random, and one-million-event tests through the new transport.
 Report result-register blocked time, host-ring occupancy/high-water mark,

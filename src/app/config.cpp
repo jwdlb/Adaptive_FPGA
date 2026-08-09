@@ -235,7 +235,7 @@ std::string usage(std::string_view executable_name) {
            "  --list-opencl-devices      Print detected OpenCL devices\n"
            "  --select-gpu               Select the first available GPU, or the requested GPU\n"
            "  --gpu-smoke-test           Run [1, 2, 3] -> [2, 4, 6] on the selected GPU\n"
-           "  --gpu-feature-upload       Upload completed RTL 32 x 8 feature batches to the selected GPU\n"
+           "  --gpu-feature-upload       Run the separate GPU worker on streamed RTL features\n"
            "  --version                  Print program version\n"
            "  --help, -h                 Print this help\n";
 }

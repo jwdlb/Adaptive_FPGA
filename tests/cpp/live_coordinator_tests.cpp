@@ -19,6 +19,11 @@ TEST_CASE("live coordinator processes RTL events without a reference comparison"
 
     REQUIRE_FALSE(result.error.has_value());
     REQUIRE(result.processed_events == events.size());
+    // Normal live processing now uses the independent streaming transport even
+    // without a GPU: the RTL worker produces compact results and this test-side
+    // no-GPU consumer releases them as they arrive.
+    REQUIRE(result.rtl_stream_results_published == events.size());
+    REQUIRE(result.gpu_rtl_results_consumed == 0U);
     REQUIRE(result.rtl_cycles > 0U);
     REQUIRE(result.final_rtl.signal.model_version == 1U);
 #else
