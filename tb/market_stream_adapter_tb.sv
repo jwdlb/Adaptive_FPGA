@@ -40,6 +40,12 @@ module market_stream_adapter_tb;
   book_error_t result_error;
   logic signed [31:0] result_feature_values [0:FEATURE_COUNT-1];
   logic result_feature_valid;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic signed [31:0] result_best_bid_price_ticks;
+  logic [31:0] result_best_bid_quantity;
+  logic signed [31:0] result_best_ask_price_ticks;
+  logic [31:0] result_best_ask_quantity;
+  /* verilator lint_on UNUSEDSIGNAL */
   logic signed [31:0] held_feature_values [0:FEATURE_COUNT-1];
   logic held_feature_valid;
 

@@ -33,6 +33,14 @@ struct GpuSmokeTestResult {
     std::optional<app::OpenclDeviceInfo> device{};
 };
 
+// Two mapped OpenCL regions for one labelled Phase 7 training batch. Features
+// remain exactly `[sample][8]`; labels are a separate one-value-per-sample
+// training-answer buffer and are never fed into the RTL strategy as features.
+struct MappedTrainingBatch {
+    std::span<std::int32_t> features{};
+    std::span<std::int32_t> labels{};
+};
+
 // Owns the reusable OpenCL connection for a selected GPU and two device-side
 // FeatureBatch buffers. It deliberately knows nothing about the learner or RTL.
 class GpuModel {
@@ -91,6 +99,16 @@ public:
     // Discard a partially filled mapped input during orderly shutdown. No GPU
     // kernel is run and the same buffer becomes available for a future batch.
     void discard_stream_feature_rows();
+
+    // Map a configurable labelled training batch. GpuWorker fills the existing
+    // eight-feature layout and a separate Q16.16 BUY/HOLD/SELL label per row.
+    [[nodiscard]] MappedTrainingBatch map_training_batch(std::size_t rows);
+    // Unmap the completed training batch and have the GPU fine-tune its
+    // persistent linear weights and BUY/SELL thresholds. The GPU returns a full
+    // replacement ModelUpdate through the existing poll/mailbox path.
+    void submit_training_batch(std::uint64_t version, std::int32_t learning_rate_q16);
+    [[nodiscard]] std::optional<ModelUpdate> poll_training_update();
+    void discard_training_batch();
 
 private:
     class Impl;

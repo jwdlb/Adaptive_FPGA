@@ -15,6 +15,13 @@ struct RtlStreamResult {
     std::uint64_t timestamp_ns{};
     market::BookError error{market::BookError::None};
     market::FeatureVector features{};
+    // These four values travel beside—not inside—the eight model features.
+    // GpuWorker uses them later to label whether a one-unit BUY or SELL would
+    // have been executable and profitable at the configured future horizon.
+    std::int32_t best_bid_price_ticks{};
+    std::uint32_t best_bid_quantity{};
+    std::int32_t best_ask_price_ticks{};
+    std::uint32_t best_ask_quantity{};
 };
 
 }  // namespace market_engine::verilator

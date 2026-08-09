@@ -34,20 +34,28 @@ TEST_CASE("GPU worker fills mapped streaming rows and publishes one complete mod
     }
 
     app::SpscRingBuffer<verilator::RtlStreamResult> result_ring(3U);
-    const auto publish_result = [&result_ring](const bool valid, const std::int32_t first_feature) {
+    const auto publish_result = [&result_ring](const std::uint64_t event_index,
+                                               const std::int32_t bid,
+                                               const std::int32_t ask) {
         verilator::RtlStreamResult* result = result_ring.try_reserve_push();
         REQUIRE(result != nullptr);
-        result->features.valid = valid;
-        result->features.values[0] = first_feature;
+        result->event_index = event_index;
+        result->features.valid = true;
+        result->features.values[0] = 123;
+        result->features.values[7] = market::fixed_point::kOne;
+        result->best_bid_price_ticks = bid;
+        result->best_ask_price_ticks = ask;
+        result->best_bid_quantity = 1U;
+        result->best_ask_quantity = 1U;
         result_ring.publish_push();
     };
-    // Invalid results are consumed but do not become GPU training rows.
-    publish_result(false, 999);
-    publish_result(true, 123);
-    publish_result(true, 456);
+    // Event one can buy at 101; one event later it can sell at 103, so it is a
+    // genuine executable BUY training example rather than a midpoint proxy.
+    publish_result(1U, 100, 101);
+    publish_result(2U, 103, 104);
 
     gpu::ModelUpdateMailbox mailbox;
-    gpu::GpuWorker worker(*model, result_ring, mailbox, 2U, 2U);
+    gpu::GpuWorker worker(*model, result_ring, mailbox, 1U, 2U, 1U);
     std::thread worker_thread([&] { worker.run(); });
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -60,15 +68,14 @@ TEST_CASE("GPU worker fills mapped streaming rows and publishes one complete mod
     const std::optional<gpu::ModelUpdate> update = mailbox.take();
     REQUIRE(update.has_value());
     REQUIRE(update->update_version == 2U);
-    REQUIRE(update->weights[0] == 123);
-    REQUIRE(update->weights[7] == market::fixed_point::kOne);
-    REQUIRE(update->buy_threshold == 0);
-    REQUIRE(update->sell_threshold == -market::fixed_point::kOne);
+    REQUIRE(update->weights[7] > 0);
+    REQUIRE(update->buy_threshold > update->sell_threshold);
 
     const gpu::GpuWorkerMetrics metrics = worker.metrics();
-    REQUIRE(metrics.rtl_results_consumed == 3U);
-    REQUIRE(metrics.invalid_feature_results_discarded == 1U);
-    REQUIRE(metrics.valid_feature_rows_copied == 2U);
+    REQUIRE(metrics.rtl_results_consumed == 2U);
+    REQUIRE(metrics.invalid_feature_results_discarded == 0U);
+    REQUIRE(metrics.valid_feature_rows_copied == 1U);
+    REQUIRE(metrics.labelled_rows_created == 1U);
     REQUIRE(metrics.batches_submitted == 1U);
     REQUIRE(metrics.model_updates_published == 1U);
 }

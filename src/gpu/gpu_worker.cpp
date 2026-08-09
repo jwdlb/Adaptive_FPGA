@@ -4,61 +4,85 @@
 #include <stdexcept>
 #include <thread>
 
+#include "market/fixed_point.hpp"
+
 namespace market_engine::gpu {
 
 GpuWorker::GpuWorker(GpuModel& model,
                      app::SpscRingBuffer<verilator::RtlStreamResult>& result_ring,
                      ModelUpdateMailbox& update_mailbox,
                      const std::size_t batch_rows,
-                     const std::uint64_t first_update_version)
+                     const std::uint64_t first_update_version,
+                     const std::uint64_t label_horizon_events,
+                     const std::int32_t minimum_profit_ticks,
+                     const std::int32_t learning_rate_q16)
     : model_(model), result_ring_(result_ring), update_mailbox_(update_mailbox),
-      batch_rows_(batch_rows), next_update_version_(first_update_version) {
-    if (batch_rows_ == 0U) throw std::invalid_argument("GPU worker batch size must be positive");
-    if (next_update_version_ == 0U) throw std::invalid_argument("first GPU model-update version must be positive");
+      batch_rows_(batch_rows), next_update_version_(first_update_version),
+      label_horizon_events_(label_horizon_events), minimum_profit_ticks_(minimum_profit_ticks),
+      learning_rate_q16_(learning_rate_q16) {
+    if (batch_rows_ == 0U || label_horizon_events_ == 0U || minimum_profit_ticks_ <= 0 || learning_rate_q16_ <= 0) {
+        throw std::invalid_argument("GPU training batch size, horizon, profit threshold, and learning rate must be positive");
+    }
 }
 
 void GpuWorker::begin_mapped_batch() {
-    if (!mapped_values_.empty() || mapped_row_count_ != 0U) {
-        throw std::logic_error("GPU worker already owns a mapped feature batch");
+    if (!mapped_values_.empty() || !mapped_labels_.empty() || mapped_row_count_ != 0U) {
+        throw std::logic_error("GPU worker already owns a mapped training batch");
     }
-    mapped_values_ = model_.map_stream_feature_rows(batch_rows_);
-    const std::size_t expected_values = batch_rows_ * market::FeatureVector::kFeatureCount;
-    if (mapped_values_.size() != expected_values) {
-        throw std::runtime_error("GPU model mapped the wrong number of streaming feature values");
+    const MappedTrainingBatch batch = model_.map_training_batch(batch_rows_);
+    mapped_values_ = batch.features;
+    mapped_labels_ = batch.labels;
+    if (mapped_values_.size() != batch_rows_ * market::FeatureVector::kFeatureCount ||
+        mapped_labels_.size() != batch_rows_) {
+        throw std::runtime_error("GPU model mapped the wrong training-batch shape");
     }
 }
 
-void GpuWorker::copy_valid_row(const verilator::RtlStreamResult& result) {
-    if (!result.features.valid) {
+void GpuWorker::add_labelled_row(const verilator::RtlStreamResult& entry,
+                                 const verilator::RtlStreamResult& future) {
+    if (!entry.features.valid || entry.best_bid_price_ticks <= 0 || entry.best_ask_price_ticks <= 0 ||
+        future.best_bid_price_ticks <= 0 || future.best_ask_price_ticks <= 0 ||
+        entry.best_bid_quantity == 0U || entry.best_ask_quantity == 0U ||
+        future.best_bid_quantity == 0U || future.best_ask_quantity == 0U) {
         ++metrics_.invalid_feature_results_discarded;
         return;
     }
     if (mapped_values_.empty()) begin_mapped_batch();
 
     const std::size_t offset = mapped_row_count_ * market::FeatureVector::kFeatureCount;
-    std::copy(result.features.values.begin(), result.features.values.end(), mapped_values_.begin() + offset);
+    std::copy(entry.features.values.begin(), entry.features.values.end(), mapped_values_.begin() + offset);
+    const std::int64_t long_profit = static_cast<std::int64_t>(future.best_bid_price_ticks) - entry.best_ask_price_ticks;
+    const std::int64_t short_profit = static_cast<std::int64_t>(entry.best_bid_price_ticks) - future.best_ask_price_ticks;
+    mapped_labels_[mapped_row_count_] =
+        long_profit >= minimum_profit_ticks_ && long_profit > short_profit ? market::fixed_point::kOne :
+        short_profit >= minimum_profit_ticks_ && short_profit > long_profit ? -market::fixed_point::kOne : 0;
     ++mapped_row_count_;
     ++metrics_.valid_feature_rows_copied;
+    ++metrics_.labelled_rows_created;
 
     if (mapped_row_count_ == batch_rows_) {
-        // This unmaps the OpenCL-visible input before the GPU uses it, starts the
-        // deterministic Phase 6 update kernel, and returns immediately. The RTL
-        // worker remains independent because this separate thread owns the wait.
-        model_.submit_phase6_model_update(next_update_version_);
+        model_.submit_training_batch(next_update_version_, learning_rate_q16_);
         mapped_values_ = {};
+        mapped_labels_ = {};
         mapped_row_count_ = 0U;
         model_update_in_flight_ = true;
         ++metrics_.batches_submitted;
     }
 }
 
+void GpuWorker::consume_result(const verilator::RtlStreamResult& result) {
+    while (!pending_labels_.empty() &&
+           result.event_index >= pending_labels_.front().event_index + label_horizon_events_) {
+        add_labelled_row(pending_labels_.front(), result);
+        pending_labels_.pop_front();
+    }
+    if (result.error == market::BookError::None) pending_labels_.push_back(result);
+}
+
 void GpuWorker::poll_model_update() {
     if (!model_update_in_flight_) return;
-    const std::optional<ModelUpdate> update = model_.poll_phase6_model_update();
+    const std::optional<ModelUpdate> update = model_.poll_training_update();
     if (!update) return;
-
-    // The mailbox stores only the newest complete replacement. publish() checks
-    // the version and BUY/SELL ordering before another thread can observe it.
     update_mailbox_.publish(*update);
     next_update_version_ = update->update_version + 1U;
     model_update_in_flight_ = false;
@@ -68,60 +92,44 @@ void GpuWorker::poll_model_update() {
 void GpuWorker::run() {
     while (true) {
         bool made_progress = false;
-
         if (model_update_in_flight_) {
-            const std::size_t updates_before = metrics_.model_updates_published;
+            const std::size_t before = metrics_.model_updates_published;
             poll_model_update();
-            made_progress = metrics_.model_updates_published != updates_before;
+            made_progress = metrics_.model_updates_published != before;
         }
 
         if (stop_requested_.load(std::memory_order_relaxed)) {
-            // Do not submit a short trailing training batch. Its mapped memory is
-            // returned cleanly, while a full already-submitted batch still polls
-            // above until it publishes its ModelUpdate.
             if (!mapped_values_.empty()) {
-                model_.discard_stream_feature_rows();
-                mapped_values_ = {};
-                mapped_row_count_ = 0U;
+                model_.discard_training_batch();
+                mapped_values_ = {}; mapped_labels_ = {}; mapped_row_count_ = 0U;
             }
+            pending_labels_.clear();
             if (!model_update_in_flight_) break;
         } else if (!model_update_in_flight_) {
             if (const verilator::RtlStreamResult* result = result_ring_.try_begin_pop(); result != nullptr) {
-                // Copy the eight values while this slot is owned by the consumer,
-                // then release it immediately. OpenCL never holds the SPSC slot.
-                copy_valid_row(*result);
+                // This is the only time the SPSC slot is held. GPU execution
+                // begins later from mapped OpenCL memory, never from the ring.
+                consume_result(*result);
                 result_ring_.finish_pop();
                 ++metrics_.rtl_results_consumed;
                 made_progress = true;
             }
         }
 
-        // Only the coordinator sends this after VerilatorWorker has published
-        // its final result. At that point an empty ring cannot receive more
-        // rows, so a partial batch is deliberately discarded and the worker can
-        // exit after its last full-batch ModelUpdate has been published.
-        if (input_complete_.load(std::memory_order_relaxed) && result_ring_.empty() &&
-            !model_update_in_flight_) {
+        if (input_complete_.load(std::memory_order_relaxed) && result_ring_.empty() && !model_update_in_flight_) {
             if (!mapped_values_.empty()) {
-                model_.discard_stream_feature_rows();
-                mapped_values_ = {};
-                mapped_row_count_ = 0U;
+                model_.discard_training_batch();
+                mapped_values_ = {}; mapped_labels_ = {}; mapped_row_count_ = 0U;
             }
+            pending_labels_.clear(); // Last horizon rows have no future outcome.
             break;
         }
-
         if (!made_progress) std::this_thread::yield();
     }
 }
 
-void GpuWorker::request_input_complete() noexcept {
-    input_complete_.store(true, std::memory_order_relaxed);
-}
-
-void GpuWorker::request_stop() noexcept {
-    stop_requested_.store(true, std::memory_order_relaxed);
-}
-
+void GpuWorker::request_input_complete() noexcept { input_complete_.store(true, std::memory_order_relaxed); }
+void GpuWorker::request_stop() noexcept { stop_requested_.store(true, std::memory_order_relaxed); }
 GpuWorkerMetrics GpuWorker::metrics() const noexcept { return metrics_; }
 
 }  // namespace market_engine::gpu

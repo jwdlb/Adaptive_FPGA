@@ -702,6 +702,9 @@ machine clearly skips only hardware-dependent OpenCL tests.
 
 ### 7.1 Implement the pending-label queue
 
+**Current status: implemented without a CPU learning oracle.** `GpuWorker`
+keeps compact RTL rows until `labelHorizonEvents` later book data is available.
+
 For the initial ordinary regression learner, store each valid eight-feature row,
 its reference midpoint, and target event index until its future label becomes known.
 Do not impose a fixed 32-row temporal sequence: `N` is the configurable number of
@@ -711,6 +714,12 @@ learner may add its own sequence construction behind the same Phase 6 schemas.
 Check: label cannot be produced before horizon expiry.
 
 ### 7.2 Implement label completion
+
+**Current status: implemented.** A row is labelled BUY when buying at its best
+ask then selling at the future best bid clears one tick; it is labelled SELL
+for the mirrored executable outcome; otherwise it is HOLD. The top-of-book
+prices and quantities are sidecar fields on `RtlStreamResult`, not new RTL
+strategy features.
 
 Future midpoint rise is label 1; fall is 0; ties/invalid states are omitted.
 
@@ -726,6 +735,11 @@ Check: hand-worked prediction, loss, gradient, generated-update, and batch vecto
 
 ### 7.4 Implement GPU prediction/update kernels for the selected model
 
+**Current status: implemented as the first simple GPU learner.** The OpenCL
+kernel keeps a persistent Q16.16 linear model, runs deterministic SGD over a
+configurable labelled `N x 8` batch, fine-tunes BUY/SELL thresholds from the
+batch scores, and returns a complete replacement through the existing mailbox.
+
 Keep learner parameters device-resident. Implement forward, backward, update, and
 latest-sequence inference kernels; calculate compact loss/accuracy metrics and return
 the Phase 6 `ModelUpdate` packet.
@@ -734,6 +748,10 @@ Check: CPU/GPU generated values, prediction, gradient, and one-update agreement
 within documented tolerance.
 
 ### 7.5 Fill and submit labelled batches
+
+**Current status: implemented.** `featureBatchSize` is the runtime `N`; the
+GPU worker maps `[N][8]` features plus a separate `[N]` label buffer and submits
+only full labelled batches.
 
 Preserve event order; submit full batches only in v1 and report tail samples.
 

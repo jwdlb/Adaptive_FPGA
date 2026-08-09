@@ -85,7 +85,9 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
         // of the ring immediately, so it never holds a ring slot while OpenCL
         // runs. Its complete replacement model returns through update_mailbox.
         gpu::GpuWorker gpu_worker(*gpu_model, result_ring, update_mailbox,
-                                  config_.feature_batch_size);
+                                  config_.feature_batch_size, 2U,
+                                  config_.label_horizon_events, 1,
+                                  market::fixed_point::from_double(config_.learning_rate));
         std::exception_ptr gpu_failure;
         std::atomic_bool gpu_failed{false};
         std::thread gpu_thread([&] {

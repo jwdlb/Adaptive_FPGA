@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <span>
 
@@ -23,6 +24,7 @@ struct GpuWorkerMetrics {
     std::size_t valid_feature_rows_copied{};
     std::size_t batches_submitted{};
     std::size_t model_updates_published{};
+    std::size_t labelled_rows_created{};
 };
 
 class GpuWorker {
@@ -31,7 +33,10 @@ public:
               app::SpscRingBuffer<verilator::RtlStreamResult>& result_ring,
               ModelUpdateMailbox& update_mailbox,
               std::size_t batch_rows,
-              std::uint64_t first_update_version = 2U);
+              std::uint64_t first_update_version = 2U,
+              std::uint64_t label_horizon_events = 100U,
+              std::int32_t minimum_profit_ticks = 1,
+              std::int32_t learning_rate_q16 = 66);
 
     GpuWorker(const GpuWorker&) = delete;
     GpuWorker& operator=(const GpuWorker&) = delete;
@@ -51,7 +56,9 @@ public:
 
 private:
     void begin_mapped_batch();
-    void copy_valid_row(const verilator::RtlStreamResult& result);
+    void consume_result(const verilator::RtlStreamResult& result);
+    void add_labelled_row(const verilator::RtlStreamResult& entry,
+                          const verilator::RtlStreamResult& future);
     void poll_model_update();
 
     GpuModel& model_;
@@ -59,8 +66,13 @@ private:
     ModelUpdateMailbox& update_mailbox_;
     const std::size_t batch_rows_;
     std::uint64_t next_update_version_;
+    const std::uint64_t label_horizon_events_;
+    const std::int32_t minimum_profit_ticks_;
+    const std::int32_t learning_rate_q16_;
     std::span<std::int32_t> mapped_values_{};
+    std::span<std::int32_t> mapped_labels_{};
     std::size_t mapped_row_count_{};
+    std::deque<verilator::RtlStreamResult> pending_labels_;
     bool model_update_in_flight_{false};
     std::atomic_bool input_complete_{false};
     std::atomic_bool stop_requested_{false};

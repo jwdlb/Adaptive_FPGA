@@ -97,6 +97,7 @@ public:
     cl_program program{nullptr};
     cl_kernel smoke_kernel{nullptr};
     cl_kernel phase6_update_kernel{nullptr};
+    cl_kernel training_kernel{nullptr};
     cl_mem input_buffer{nullptr};
     cl_mem output_buffer{nullptr};
     cl_event input_complete{nullptr};
@@ -112,11 +113,13 @@ public:
     // mapping support so GpuWorker can write its `[N][8]` values directly into
     // OpenCL-visible memory instead of first building another CPU FeatureBatch.
     cl_mem stream_input_buffer{nullptr};
+    cl_mem stream_label_buffer{nullptr};
     cl_mem stream_update_buffer{nullptr};
     cl_event stream_unmap_complete{nullptr};
     cl_event stream_kernel_complete{nullptr};
     cl_event stream_read_complete{nullptr};
     std::int32_t* mapped_stream_values{nullptr};
+    std::int32_t* mapped_stream_labels{nullptr};
     std::size_t mapped_stream_rows{0};
     std::size_t stream_capacity_rows{0};
     std::array<std::int32_t, market::FeatureVector::kFeatureCount + 2U> stream_update_values{};
@@ -155,6 +158,8 @@ public:
             check_opencl(status, "creating double_values OpenCL kernel");
             phase6_update_kernel = clCreateKernel(program, "phase6_model_update", &status);
             check_opencl(status, "creating phase6_model_update OpenCL kernel");
+            training_kernel = clCreateKernel(program, "train_linear_model", &status);
+            check_opencl(status, "creating train_linear_model OpenCL kernel");
 
             // Allocate the two actual OpenCL input buffers now. They are kept on
             // the selected GPU and later learner kernels will read from them.
@@ -190,6 +195,15 @@ public:
             mapped_stream_values = nullptr;
             mapped_stream_rows = 0;
         }
+        if (mapped_stream_labels != nullptr && queue != nullptr && stream_label_buffer != nullptr) {
+            cl_event unmap_event{nullptr};
+            if (clEnqueueUnmapMemObject(queue, stream_label_buffer, mapped_stream_labels, 0, nullptr,
+                                        &unmap_event) == CL_SUCCESS) {
+                clWaitForEvents(1, &unmap_event);
+                clReleaseEvent(unmap_event);
+            }
+            mapped_stream_labels = nullptr;
+        }
         release_event(stream_read_complete);
         release_event(stream_kernel_complete);
         release_event(stream_unmap_complete);
@@ -200,6 +214,10 @@ public:
         if (stream_input_buffer != nullptr) {
             clReleaseMemObject(stream_input_buffer);
             stream_input_buffer = nullptr;
+        }
+        if (stream_label_buffer != nullptr) {
+            clReleaseMemObject(stream_label_buffer);
+            stream_label_buffer = nullptr;
         }
         // Completion events refer to operations using the buffers, so release them first.
         release_event(output_complete);
@@ -227,6 +245,10 @@ public:
         if (phase6_update_kernel != nullptr) {
             clReleaseKernel(phase6_update_kernel);
             phase6_update_kernel = nullptr;
+        }
+        if (training_kernel != nullptr) {
+            clReleaseKernel(training_kernel);
+            training_kernel = nullptr;
         }
         if (program != nullptr) {
             clReleaseProgram(program);
@@ -369,7 +391,7 @@ public:
     void ensure_stream_capacity(const std::size_t rows) {
         if (rows == 0U) throw std::invalid_argument("GPU streaming batch must contain at least one row");
         if (rows <= stream_capacity_rows) return;
-        if (mapped_stream_values != nullptr || pending_stream_update_version) {
+        if (mapped_stream_values != nullptr || mapped_stream_labels != nullptr || pending_stream_update_version) {
             throw std::logic_error("cannot resize a mapped or in-flight GPU streaming buffer");
         }
         if (rows > std::numeric_limits<std::size_t>::max() /
@@ -384,15 +406,29 @@ public:
             clReleaseMemObject(stream_input_buffer);
             stream_input_buffer = nullptr;
         }
+        if (stream_label_buffer != nullptr) {
+            clReleaseMemObject(stream_label_buffer);
+            stream_label_buffer = nullptr;
+        }
 
         const std::size_t input_bytes = rows * market::FeatureVector::kFeatureCount * sizeof(std::int32_t);
         cl_int status = CL_SUCCESS;
         stream_input_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
                                              input_bytes, nullptr, &status);
         check_opencl(status, "creating mapped GPU streaming input buffer");
-        stream_update_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY,
+        stream_label_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
+                                             rows * sizeof(std::int32_t), nullptr, &status);
+        check_opencl(status, "creating mapped GPU training-label buffer");
+        stream_update_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
                                               stream_update_values.size() * sizeof(std::int32_t), nullptr, &status);
         check_opencl(status, "creating GPU streaming model-update buffer");
+        stream_update_values.fill(0);
+        stream_update_values[market::FeatureVector::kFeatureCount] = 16384;
+        stream_update_values[market::FeatureVector::kFeatureCount + 1U] = -16384;
+        check_opencl(clEnqueueWriteBuffer(queue, stream_update_buffer, CL_TRUE, 0,
+                                          stream_update_values.size() * sizeof(std::int32_t),
+                                          stream_update_values.data(), 0, nullptr, nullptr),
+                     "initialising GPU training model");
         stream_capacity_rows = rows;
     }
 
@@ -495,6 +531,67 @@ public:
         release_event(unmap_complete);
     }
 
+    [[nodiscard]] MappedTrainingBatch map_training_batch(const std::size_t rows) {
+        const std::span<std::int32_t> features = map_stream_feature_rows(rows);
+        cl_int status = CL_SUCCESS;
+        mapped_stream_labels = static_cast<std::int32_t*>(clEnqueueMapBuffer(
+            queue, stream_label_buffer, CL_TRUE, CL_MAP_WRITE, 0, rows * sizeof(std::int32_t),
+            0, nullptr, nullptr, &status));
+        check_opencl(status, "mapping GPU training-label buffer");
+        return {.features = features, .labels = {mapped_stream_labels, rows}};
+    }
+
+    void submit_training_batch(const std::uint64_t version, const std::int32_t learning_rate_q16) {
+        if (mapped_stream_values == nullptr || mapped_stream_labels == nullptr || mapped_stream_rows == 0U) {
+            throw std::logic_error("cannot train without mapped features and labels");
+        }
+        if (version == 0U || learning_rate_q16 <= 0) {
+            throw std::invalid_argument("GPU training version and learning rate must be positive");
+        }
+        if (pending_stream_update_version) throw std::logic_error("GPU training update is already in flight");
+
+        const cl_uint rows_to_train = static_cast<cl_uint>(mapped_stream_rows);
+        release_event(stream_read_complete); release_event(stream_kernel_complete); release_event(stream_unmap_complete);
+        cl_event label_unmap_complete{nullptr};
+        check_opencl(clEnqueueUnmapMemObject(queue, stream_input_buffer, mapped_stream_values,
+                                             0, nullptr, &stream_unmap_complete),
+                     "unmapping GPU training features");
+        check_opencl(clEnqueueUnmapMemObject(queue, stream_label_buffer, mapped_stream_labels,
+                                             0, nullptr, &label_unmap_complete),
+                     "unmapping GPU training labels");
+        mapped_stream_values = nullptr; mapped_stream_labels = nullptr; mapped_stream_rows = 0U;
+        check_opencl(clSetKernelArg(training_kernel, 0, sizeof(stream_input_buffer), &stream_input_buffer), "setting training features");
+        check_opencl(clSetKernelArg(training_kernel, 1, sizeof(stream_label_buffer), &stream_label_buffer), "setting training labels");
+        check_opencl(clSetKernelArg(training_kernel, 2, sizeof(rows_to_train), &rows_to_train), "setting training row count");
+        check_opencl(clSetKernelArg(training_kernel, 3, sizeof(learning_rate_q16), &learning_rate_q16), "setting training learning rate");
+        check_opencl(clSetKernelArg(training_kernel, 4, sizeof(stream_update_buffer), &stream_update_buffer), "setting training model state");
+        const cl_event waits[]{stream_unmap_complete, label_unmap_complete};
+        constexpr std::size_t global_size{1U};
+        check_opencl(clEnqueueNDRangeKernel(queue, training_kernel, 1, nullptr, &global_size, nullptr,
+                                            2, waits, &stream_kernel_complete), "running GPU linear training");
+        clReleaseEvent(label_unmap_complete);
+        check_opencl(clEnqueueReadBuffer(queue, stream_update_buffer, CL_FALSE, 0,
+                                         stream_update_values.size() * sizeof(std::int32_t), stream_update_values.data(),
+                                         1, &stream_kernel_complete, &stream_read_complete), "reading GPU trained model");
+        check_opencl(clFlush(queue), "starting GPU linear training");
+        pending_stream_update_version = version;
+    }
+
+    [[nodiscard]] std::optional<ModelUpdate> poll_training_update() { return poll_phase6_model_update(); }
+
+    void discard_training_batch() {
+        if (mapped_stream_values == nullptr && mapped_stream_labels == nullptr) return;
+        discard_stream_feature_rows();
+        if (mapped_stream_labels != nullptr) {
+            cl_event event{nullptr};
+            check_opencl(clEnqueueUnmapMemObject(queue, stream_label_buffer, mapped_stream_labels,
+                                                 0, nullptr, &event), "discarding mapped GPU training labels");
+            mapped_stream_labels = nullptr;
+            check_opencl(clWaitForEvents(1, &event), "waiting to discard GPU training labels");
+            release_event(event);
+        }
+    }
+
 private:
     // Release one optional OpenCL event and clear its handle.
     static void release_event(cl_event& event) noexcept {
@@ -586,6 +683,40 @@ void GpuModel::discard_stream_feature_rows() {
     throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
 #else
     impl_->discard_stream_feature_rows();
+#endif
+}
+
+MappedTrainingBatch GpuModel::map_training_batch(const std::size_t rows) {
+#if !MARKET_ENGINE_HAS_OPENCL
+    static_cast<void>(rows);
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    return impl_->map_training_batch(rows);
+#endif
+}
+
+void GpuModel::submit_training_batch(const std::uint64_t version, const std::int32_t learning_rate_q16) {
+#if !MARKET_ENGINE_HAS_OPENCL
+    static_cast<void>(version); static_cast<void>(learning_rate_q16);
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    impl_->submit_training_batch(version, learning_rate_q16);
+#endif
+}
+
+std::optional<ModelUpdate> GpuModel::poll_training_update() {
+#if !MARKET_ENGINE_HAS_OPENCL
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    return impl_->poll_training_update();
+#endif
+}
+
+void GpuModel::discard_training_batch() {
+#if !MARKET_ENGINE_HAS_OPENCL
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    impl_->discard_training_batch();
 #endif
 }
 

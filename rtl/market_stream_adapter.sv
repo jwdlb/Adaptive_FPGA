@@ -41,7 +41,14 @@ module market_stream_adapter #(
   output logic        [63:0]              result_timestamp_ns,
   output market_types_pkg::book_error_t   result_error,
   output logic signed [31:0]              result_feature_values [0:market_types_pkg::FEATURE_COUNT-1],
-  output logic                            result_feature_valid
+  output logic                            result_feature_valid,
+  // Top-of-book context for Phase 7 labelling. These are sidecar fields, not
+  // additional strategy features: the RTL model still consumes only its eight
+  // existing feature values.
+  output logic signed [31:0]              result_best_bid_price_ticks,
+  output logic        [31:0]              result_best_bid_quantity,
+  output logic signed [31:0]              result_best_ask_price_ticks,
+  output logic        [31:0]              result_best_ask_quantity
 );
   import market_types_pkg::*;
 
@@ -105,6 +112,10 @@ module market_stream_adapter #(
       result_timestamp_ns <= '0;
       result_error <= BOOK_ERROR_NONE;
       result_feature_valid <= 1'b0;
+      result_best_bid_price_ticks <= '0;
+      result_best_bid_quantity <= '0;
+      result_best_ask_price_ticks <= '0;
+      result_best_ask_quantity <= '0;
       for (int unsigned index = 0; index < FEATURE_COUNT; index++) begin
         result_feature_values[index] <= '0;
       end
@@ -116,6 +127,10 @@ module market_stream_adapter #(
         result_timestamp_ns <= accepted_timestamp_ns;
         result_error <= event_error;
         result_feature_valid <= feature_valid;
+        result_best_bid_price_ticks <= bid_snapshot[0].price_ticks;
+        result_best_bid_quantity <= bid_snapshot[0].quantity;
+        result_best_ask_price_ticks <= ask_snapshot[0].price_ticks;
+        result_best_ask_quantity <= ask_snapshot[0].quantity;
         for (int unsigned index = 0; index < FEATURE_COUNT; index++) begin
           result_feature_values[index] <= feature_values[index];
         end

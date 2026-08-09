@@ -122,6 +122,10 @@ public:
         destination.timestamp_ns = dut_.result_timestamp_ns;
         destination.error = static_cast<market::BookError>(dut_.result_error);
         destination.features.valid = dut_.result_feature_valid != 0;
+        destination.best_bid_price_ticks = dut_.result_best_bid_price_ticks;
+        destination.best_bid_quantity = dut_.result_best_bid_quantity;
+        destination.best_ask_price_ticks = dut_.result_best_ask_price_ticks;
+        destination.best_ask_quantity = dut_.result_best_ask_quantity;
         for (std::size_t index = 0; index < kFeatureCount; ++index) {
             destination.features.values[index] = stream_feature_value(index);
         }
