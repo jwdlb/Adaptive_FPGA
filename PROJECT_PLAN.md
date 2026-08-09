@@ -6,7 +6,8 @@
 
 Build a reproducible research prototype in which:
 
-- C++ replays decoded market events and coordinates all components.
+- C++ coordinates decoded market events and all components through the normal
+  live streaming path.
 - A cycle-accurate Verilated SystemVerilog model owns the order book, feature calculation, and BUY/SELL/HOLD decision.
 - An OpenCL GPU learner, selected independently of the surrounding runtime,
   generates bounded replacement values for the FPGA's eight weights (weight 7
@@ -46,17 +47,32 @@ and FPGA implementation of GPU-model inference.
 ## 2. Architecture and component ownership
 
 ```text
-Event file/generator
-        |
-        v
-EventReader -> ReplayCoordinator -> VerilatorRunner -> Verilated FPGA model
-                                  parser -> 10x10 book -> features -> score/signal
-                                         |                    |
-                              atomic ModelUpdate              | one valid 8-feature snapshot
-                                         ^                    v
-                         GpuModel <- GPU batches <- coordinator sequence builder
-                                         |
-                                  pluggable GPU learner
+Stream 1 — market events into RTL:
+
+CSV -> vector<MarketEvent> -> dedicated RTL worker -> RTL valid/ready input
+                                                        |
+                                                        v
+                                      10x10 book -> features -> score/signal
+
+Stream 2 — RTL feature results into GPU:
+
+RTL pipeline -> one stable valid/ready result register -> dedicated RTL worker
+                                                           |
+                                                           v
+                                       1,024-entry host SPSC result ring
+                                                   |
+                                                   v
+                                      separate GPU worker
+                                                   |
+                                                   v
+                            configurable OpenCL [N][8] buffer -> GpuModel
+
+Stream 3 — GPU model updates back into RTL:
+
+GpuModel -> newest ModelUpdate mailbox -> dedicated RTL worker
+                                                   |
+                                                   v
+                                   RTL shadow bank + atomic commit
 
 C++ immutable snapshots -> WebSocket server -> browser
 ```
@@ -65,10 +81,12 @@ Ownership rules:
 
 - RTL is authoritative for simulated market state and signals.
 - The C++ reference model is the correctness oracle during development and testing.
-- C++ owns replay, valid-sequence and delayed-label construction, buffer scheduling,
-  configuration, metrics, error handling, and the safe hand-off between GPU and RTL.
-- `ReplayCoordinator` is the only coordinator between the GPU and RTL. The GPU and
-  Verilog do not communicate directly.
+- C++ owns the immutable input-event vector, the lock-free single-producer/
+  single-consumer result ring, configurable GPU-batch construction, delayed-label
+  construction, configuration, metrics, error handling, and the safe hand-off
+  between GPU and RTL.
+- `LiveCoordinator` and its dedicated RTL worker coordinate the GPU and RTL. The GPU
+  and Verilog do not communicate directly. Replay/reference comparison is test-only.
 - OpenCL owns batched training/inference for a replaceable learner and produces a
   complete bounded `ModelUpdate`; the FPGA never waits for it.
 - The dashboard receives snapshots only; it cannot modify the processing pipeline.
@@ -84,36 +102,47 @@ Adaptive_FPGA/
 │   ├── main.cpp
 │   ├── app/
 │   │   ├── config.cpp
-│   │   ├── replay_coordinator.cpp
+│   │   ├── live_coordinator.cpp
 │   │   └── opencl_devices.cpp
 │   ├── io/
 │   │   └── event_reader.cpp
 │   ├── reference/
 │   │   └── reference_model.cpp
 │   ├── verilator/
-│   │   └── verilator_runner.cpp
+│   │   ├── verilator_runner.cpp
+│   │   └── verilator_worker.cpp
 │   ├── gpu/
-│   │   └── gpu_model.cpp
+│   │   ├── gpu_model.cpp
+│   │   ├── gpu_worker.cpp
+│   │   ├── feature_uploader.cpp
+│   │   └── model_update_mailbox.cpp
 │   └── market/
 │       ├── event.cpp
 │       └── order_book.cpp
 ├── include/
 │   ├── app/
 │   │   ├── config.hpp
-│   │   └── replay_coordinator.hpp
+│   │   ├── spsc_ring_buffer.hpp
+│   │   └── live_coordinator.hpp
 │   ├── io/
 │   │   └── event_reader.hpp
 │   ├── reference/
 │   │   └── reference_model.hpp
 │   ├── verilator/
-│   │   └── verilator_runner.hpp
+│   │   ├── verilator_runner.hpp
+│   │   ├── verilator_worker.hpp
+│   │   └── rtl_stream.hpp
 │   ├── gpu/
-│   │   └── gpu_model.hpp
+│   │   ├── gpu_model.hpp
+│   │   ├── gpu_worker.hpp
+│   │   ├── feature_uploader.hpp
+│   │   └── model_update_mailbox.hpp
 │   └── market/
 │       ├── event.hpp
 │       ├── fixed_point.hpp
 │       └── order_book.hpp
-├── rtl/           synthesizable hardware description
+├── rtl/           synthesizable hardware, including the one-result
+│                  valid/ready market_stream_adapter.sv
 ├── tb/            Verilog-only test benches
 ├── tests/
 │   ├── cpp/       protocol, book, reference-model, and Verilator-runner tests
@@ -124,10 +153,17 @@ Adaptive_FPGA/
 └── python/
 ```
 
-`main.cpp` chooses a mode and starts the replay. `EventReader` loads events.
-`ReferenceModel` is the optional C++ answer key. `VerilatorRunner` controls the
-simulated RTL. `ReplayCoordinator` alone routes snapshots to `GpuModel` and routes
+`main.cpp` starts the normal live path. `EventReader` loads events. `ReferenceModel`
+is the test-only C++ answer key. `VerilatorWorker` exclusively owns
+`VerilatorRunner` and clocks the simulated RTL. `GpuWorker` consumes the SPSC result
+ring and fills mapped OpenCL memory. `LiveCoordinator` owns their lifetime and routes
 the newest validated complete `ModelUpdate` back to the RTL shadow bank.
+
+The dedicated RTL worker performs four jobs in one non-blocking stepping loop: offer
+the next event from the immutable vector when `in_ready` is high, advance the
+Verilated clock continuously, publish a stable RTL result directly into a reserved
+host SPSC slot, and check the newest-update mailbox at safe event boundaries. It
+never runs GPU kernels.
 
 ## 3. Milestones
 
@@ -201,7 +237,7 @@ Deliver:
 Implementation notes:
 
 - Treat missing required dependencies as clear configure-time or startup errors.
-- Support `--list-opencl-devices`, `--no-gpu`, and `--reference-only` early.
+- Support `--list-opencl-devices`, `--no-gpu`, and live RTL execution early.
 - Do not silently select a CPU OpenCL device when GPU was requested.
 - Copy or locate OpenCL kernels deterministically from the build output.
 
@@ -337,34 +373,79 @@ Acceptance:
 
 Implement:
 
-- the `EventReader`, `ReferenceModel`, `VerilatorRunner`, `ReplayCoordinator`, and
-  `GpuModel` ownership boundaries described below; keep the reference model optional
-  at runtime but available for differential checking;
+- the `EventReader`, `LiveCoordinator`, dedicated `VerilatorWorker`, and `GpuModel`
+  ownership boundaries described below; keep the reference model test-only but
+  available for differential checking;
 - platform/device discovery with clear selection output;
 - RAII context, command queue, program, kernel, buffer, and event wrappers;
 - full compiler build-log reporting;
 - a versioned GPU input contract: one valid RTL feature snapshot is eight Q16.16
-  values plus event metadata; the coordinator owns a 32-snapshot collector and builds
-  contiguous `[time][feature]` batches;
+  values plus event metadata; a GPU-side C++ worker consumes snapshots and fills a
+  configurable contiguous `[sample][8 features]` OpenCL training buffer;
 - a versioned GPU output contract: one complete `ModelUpdate` contains exactly eight
   bounded replacement weights (weight 7 is the bias/intercept), bounded BUY and
   SELL threshold replacements, and a monotonically increasing version;
-- host buffers allocated with `CL_MEM_ALLOC_HOST_PTR`, including a latest-result
-  mailbox that publishes `ModelUpdate` only after GPU completion;
-- mapped double buffers with explicit states: `Free`, `Filling`, `Ready`, `InFlight`;
-- non-blocking transfers and event-driven buffer reuse; and
+- an OpenCL-mappable training buffer whose row count `N` is configurable without
+  changing the fixed eight-feature schema, plus a latest-result mailbox that
+  publishes `ModelUpdate` only after GPU completion;
+- clear mapped-buffer ownership: C++ fills the buffer only while it is mapped, and
+  the GPU uses it only after C++ unmaps and submits it; and
+- event-driven completion and reuse; and
 - profiling only in benchmark mode;
-- a coordinator-to-RTL hand-off that validates a complete newest `ModelUpdate`, writes
+- a live-path-to-RTL hand-off that validates a complete newest `ModelUpdate`, writes
   all ten fields to the shadow bank, and issues one commit only at an event boundary.
 
-The producer may acquire only a `Free` buffer. A transfer changes `Ready` to `InFlight`; completion returns it to `Free`. Any illegal transition is a hard error.
+The earlier fixed 32 x 8 A/B host-buffer uploader remains useful OpenCL prototype
+work, but it is not the final normal live transport. In the Level 2 path, the host
+result ring absorbs the backlog and the GPU worker fills a configurable `N x 8`
+mapped OpenCL buffer. A second OpenCL buffer is an optional later optimisation for
+overlap, not a correctness requirement.
+
+#### Level 2 streaming transport
+
+The normal path uses a dedicated RTL execution thread and three explicit data
+streams. For input, the complete CSV is parsed first into an immutable
+`vector<MarketEvent>`; the RTL worker retains an index/current event and offers it
+directly through the existing RTL valid/ready interface. The vector already is the
+large input backlog, so the normal CSV path has neither a duplicate host event queue
+nor an RTL input FIFO.
+
+For output, the RTL has one stable compact-result register with a valid/ready
+handshake. This is the minimum storage needed to prevent a one-cycle result pulse
+from being lost; it is not a queue. The RTL worker reserves the next writable slot
+in a fixed-capacity host SPSC ring (default 1,024 entries), decodes the RTL output
+ports directly into that slot, completes the handshake, then publishes the slot by
+advancing the atomic write position. There is no intermediate `RtlStreamResult`
+copy and no multi-entry RTL output FIFO.
+There is one producer—the RTL worker—and one consumer—the GPU-side C++ worker—so
+the fast result path needs no global mutex or lock/unlock operation for every event.
+Atomic read/write positions publish complete slots without producer/consumer data
+corruption.
+
+The host result ring is the only multi-entry result queue and deliberately holds the
+entire output backlog. When it becomes full, the RTL worker leaves the one-result
+register unaccepted; ready/valid flow control safely prevents another event result
+from overwriting it and pauses new RTL work. Nothing is dropped, and ten seconds
+without progress is a hard timeout.
+
+The GPU-side C++ worker removes results from the ring, ignores invalid feature rows,
+and copies each valid eight-value row directly into mapped OpenCL input memory until
+`N` rows are present. It then unmaps and submits that `N x 8` buffer. It never holds
+or blocks the RTL ring while OpenCL copies or trains. A mutex plus one optional
+`ModelUpdate` forms a newest-value mailbox. The RTL worker checks it at a safe event
+boundary and uses the existing shadow bank/atomic commit path.
+
+Thus normal live execution has only one multi-entry queue: the 1,024-entry host SPSC
+result ring. The single RTL output register is necessary handshake storage, not a
+queue. The `ModelUpdateMailbox` is a separate newest-value hand-off, not a FIFO. A
+host event queue is deliberately outside this project's current preloaded-CSV scope.
 
 Acceptance:
 
 - a known sample kernel executes on the chosen device;
 - transfer ordering and buffer state tests pass;
 - an in-flight buffer cannot be overwritten; and
-- a test update traverses GPU result mailbox -> coordinator -> RTL shadow bank ->
+- a test update traverses GPU result mailbox -> live coordinator -> RTL shadow bank ->
   atomic commit without a mixed parameter set; and
 - pageable/pinned and synchronous/asynchronous transfer benchmarks are recorded.
 
@@ -372,8 +453,8 @@ Acceptance:
 
 Implement:
 
-- a valid 32-event feature-sequence ring and pending queue containing the sequence,
-  current feature vector, reference midpoint, and target event index;
+- pending labelled samples containing one eight-feature row, its reference midpoint,
+  and target event index; the number of rows per training batch is configurable;
 - delayed binary labels based on future midpoint movement;
 - a CPU floating-point oracle for the selected learner;
 - OpenCL kernels for the selected learner, initially ordinary linear or logistic
@@ -381,8 +462,8 @@ Implement:
 - a model-independent `GpuModel` interface: it consumes the Phase 5 input contract
   and returns only the Phase 6 `ModelUpdate` contract;
 - device-resident learner parameters and compact loss/accuracy metrics;
-- configurable learning rate, L2 penalty, horizon, sequence length, batch size,
-  update cadence, and seed; and
+- configurable learning rate, L2 penalty, horizon, batch size, update cadence, and
+  seed; and
 - generation/readback of one complete `ModelUpdate` after each completed GPU update.
 
 A larger learner (for example a temporal CNN) is a later interchangeable implementation:

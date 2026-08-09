@@ -98,6 +98,7 @@ add_library(market_engine_app    # Separates reusable application code from the 
     src/app/live_coordinator.cpp
     src/gpu/gpu_model.cpp
     src/gpu/gpu_protocol.cpp
+    src/gpu/model_update_mailbox.cpp
     src/gpu/feature_buffers.cpp
     src/gpu/feature_uploader.cpp
     src/io/event_reader.cpp
@@ -215,6 +216,7 @@ if(BUILD_TESTING)
         tests/cpp/gpu_protocol_tests.cpp
         tests/cpp/feature_batch_tests.cpp
         tests/cpp/feature_buffers_tests.cpp
+        tests/cpp/streaming_primitives_tests.cpp
         tests/support/replay_coordinator.cpp
         src/reference/reference_model.cpp
     )

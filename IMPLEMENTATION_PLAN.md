@@ -7,15 +7,16 @@ combine a later phase with an unfinished correctness gate.
 ## Working rules
 
 - Each numbered step is one small implementation task and one commit.
-- Keep `main` buildable and runnable in reference-only mode.
+- Keep `main` buildable and runnable in normal live RTL mode.
 - Use deterministic seeds. On any mismatch, save the seed, event index, and
   preceding 100 events before investigating.
 - The order-book, feature, strategy, and parameter-bank RTL stay synthesizable.
   Debug visibility is isolated in the Verilator wrapper or synthesis guards.
 - Never add GPU/dashboard performance work before C++/RTL agreement is proven.
 - Optional capability failures are explicit; requesting GPU never falls back to
-  CPU without the user selecting a no-GPU/reference-only mode.
-- `ReplayCoordinator` is the only GPU/RTL bridge. Verilog never calls GPU software,
+  CPU without the user selecting a no-GPU mode.
+- `LiveCoordinator` and its future dedicated RTL worker are the GPU/RTL bridge.
+  Replay/reference comparison is test-only. Verilog never calls GPU software,
   and the GPU never writes RTL state directly.
 - The GPU boundary is model-independent: valid RTL snapshots enter as eight Q16.16
   features plus metadata, and every learner returns one complete ten-value
@@ -52,7 +53,8 @@ Check: `cmake -S . -B build` configures.
 
 Locate system Boost.System, OpenCL, Python, and Verilator. Pin Catch2 3.7.1
 and nlohmann/json 3.11.3 through `FetchContent`. Verilator/OpenCL remain
-optional for the initial reference-only target.
+optional for test support and GPU-less builds; normal live execution requires
+Verilator.
 
 Check: CMake prints a dependency report naming missing capabilities.
 
@@ -71,17 +73,18 @@ ctest --test-dir build --output-on-failure
 ### 0.6 Add scripts and CI
 
 Add `build.sh`, `run_tests.sh`, `run_demo.sh`, and `run_benchmark.sh`; add an
-Ubuntu CI job for build, C++ tests, Python tests, and a reference-only smoke run.
+Ubuntu CI job for build, C++ tests, Python tests, and a live RTL smoke run.
 
 Check: scripts work when called outside the repository root.
 
 ### 0.7 Add JSON configuration
 
 Add the default configuration: depth 10, 10 ns clock, 64-event feature window,
-32-event GPU sequence, batch 1,024, label horizon 100, learning rate 0.001, L2
-0.0001, one GPU-generated parameter update per completed batch, dashboard port
-8080/rate 10 Hz, and seed 42. Model-specific settings belong to the selected
-Phase 7 learner, not to the common GPU/RTL contract.
+GPU training batch 1,024 rows, label horizon 100, learning rate 0.001, L2 0.0001,
+one GPU-generated parameter update per completed batch, dashboard port 8080/rate
+10 Hz, and seed 42. Every row contains the fixed eight features; temporal sequence
+length is model-specific and is not part of the initial regression learner or the
+common GPU/RTL contract.
 
 Check: demo parses and prints the effective configuration.
 
@@ -89,7 +92,7 @@ Check: demo parses and prints the effective configuration.
 
 Reject unsupported depth, zero batch/window, invalid port, invalid rates, and
 invalid threshold ordering. Add `--config`, `--input`, `--events`, `--seed`,
-`--batch-size`, `--reference-only`, `--no-gpu`, `--no-dashboard`, `--trace`,
+`--batch-size`, `--no-gpu`, `--no-dashboard`, `--trace`,
 `--benchmark`, and `--list-opencl-devices`.
 
 Check: unit tests cover every validation failure and CLI overrides JSON.
@@ -284,7 +287,7 @@ Update protocol, book, and feature documentation from the verified fixtures.
 
 Check: docs formulas link to golden tests.
 
-**Gate:** the reference-only demo runs on any supported Ubuntu host.
+**Gate:** the live RTL demo runs on every supported Verilator host.
 
 ## Phase 4 — Synthesizable RTL book
 
@@ -383,11 +386,11 @@ Check: seeded one-million-event replay has no divergence.
 
 Keep the existing market semantics unchanged, but split the application into:
 `EventReader` (`io/`), optional `ReferenceModel` (`reference/`),
-`VerilatorRunner` (`verilator/`), `ReplayCoordinator` (`app/`), and future
-`GpuModel` (`gpu/`). Keep `main.cpp` limited to option parsing and selecting a
-runtime mode.
+`VerilatorRunner` (`verilator/`), `LiveCoordinator` (`app/`), and `GpuModel`
+(`gpu/`). Keep `main.cpp` limited to option parsing and starting normal live
+processing; retain the C++ reference model only in test support.
 
-Check: reference-only replay produces the same final checksum before and after the
+Check: live RTL processing produces the same final checksum before and after the
 move, and all existing C++ tests remain green.
 
 ### 5.1 Port fixed-point primitives to RTL
@@ -461,8 +464,26 @@ Check: one command completes with tracing disabled by default.
 ## Phase 6 — GPU/RTL contract and OpenCL infrastructure
 
 Phase 6 proves the reusable connection, not a particular learning algorithm. It must
-be possible to replace the Phase 7 learner without changing RTL, `VerilatorRunner`,
-or `ReplayCoordinator`.
+be possible to replace the Phase 7 learner without changing the RTL transport,
+`VerilatorRunner`, or `LiveCoordinator`.
+
+Steps 6.6-6.10 describe the first fixed 32 x 8 A/B upload prototype already used to
+prove OpenCL ownership and asynchronous-copy safety. The Level 2 design in
+6.12-6.16 supersedes that prototype as the normal live RTL-to-GPU path: one stable
+RTL result register is copied directly into a lock-free host result ring, then a GPU
+worker fills configurable `N x 8` mapped OpenCL memory. The prototype may remain as
+isolated test support until the new live path has equivalent coverage.
+
+The final Level 2 design has three data streams:
+
+1. CSV -> immutable `vector<MarketEvent>` -> RTL worker -> direct RTL valid/ready
+   input. The vector is already the input backlog; do not duplicate it in a host
+   event queue or RTL input FIFO.
+2. RTL -> one stable compact-result register -> RTL worker writes directly into a
+   reserved slot in the 1,024-entry host SPSC result ring -> GPU worker ->
+   configurable OpenCL `N x 8` input memory.
+3. GPU -> validated newest-value `ModelUpdateMailbox` -> RTL worker -> existing RTL
+   shadow bank -> atomic commit at a safe event boundary.
 
 ### 6.1 Enumerate OpenCL platforms/devices
 
@@ -500,8 +521,8 @@ Define, document, and test two small C++ contracts:
   threshold replacements; and a monotonically increasing update version. Updates are
   complete replacements, never deltas.
 
-The GPU and RTL do not communicate directly. `ReplayCoordinator` owns the conversion,
-validation, and hand-off between these contracts.
+The GPU and RTL do not communicate directly. The live C++ path owns conversion,
+validation, and the safe hand-off between these contracts.
 
 Check: host tests cover fields, the bias position, stale-version rejection, and invalid
 BUY/SELL boundaries.
@@ -545,14 +566,14 @@ Check: second buffer fills while first transfer is in flight.
 ### 6.10 Poll completions, retain newest result, and profile conditionally
 
 Return a buffer to Free only after its event completes; collect profiling only
-in benchmark mode. Poll GPU completion once per replay iteration; publish only the
-newest finished `ModelUpdate` to the coordinator.
+in benchmark mode. Poll GPU completion from the live streaming path; publish only
+the newest finished `ModelUpdate` to the locked mailbox.
 
 Check: delayed completion cannot cause buffer overwrite.
 
 ### 6.11 Prove the safe GPU-to-RTL hand-off
 
-Use a smoke-kernel-produced test `ModelUpdate`. `ReplayCoordinator` must reject
+Use a smoke-kernel-produced test `ModelUpdate`. The live C++ path must reject
 stale or invalid results, write all ten values through
 `VerilatorRunner` into the RTL shadow bank, and commit only at an event boundary.
 
@@ -563,13 +584,107 @@ cannot affect a signal.
 and ten-value update schema are proven, and a finished test update reaches RTL only
 through an atomic commit.
 
+### 6.12 Establish Level 2 host-side streaming primitives
+
+Add a compact `RtlStreamResult` containing event metadata, event error, and the
+same `FeatureVector` currently used to build GPU snapshots. Add a fixed-capacity
+single-producer/single-consumer ring for compact RTL results, with atomic read/write
+positions and a default capacity of 1,024. The RTL worker is its only producer and
+the GPU worker is its only consumer, so neither side takes a global mutex per result.
+Add a single locked `ModelUpdateMailbox` holding only the newest complete update.
+Do not add a generic host event queue: preloaded CSV events remain in their immutable
+vector until the RTL worker offers them directly to the existing valid/ready input.
+
+Expose a producer reservation API so the RTL worker can decode Verilator output ports
+straight into the next unpublished SPSC slot and then publish it with one atomic
+write-position update. Do not construct and copy a temporary `RtlStreamResult`.
+
+Check: SPSC ordering, direct-slot reservation/publication, cancellation, wraparound,
+full/empty detection, producer/consumer stress, capacity, shutdown, mailbox
+replacement, stale-version, and compact-result tests pass under ThreadSanitizer where
+available.
+
+### 6.13 Add a stable RTL result handshake and a stepping runner
+
+Wrap the existing `market_pipeline` result with one compact output register and a
+valid/ready handshake. The register holds its complete result stable until C++
+accepts it; it is a one-result safety register, not an RTL queue. Feed market events
+directly into the core through its existing valid/ready input: the runner retains the
+current `MarketEvent` until accepted, so no RTL input FIFO is necessary. Gate new
+event acceptance while the result register is occupied and cannot be accepted.
+Replace the live path's blocking event call with runner stepping: offer one retained
+input, expose whether a stable result is available, set result readiness, and tick
+one cycle.
+
+The 1,024-entry host SPSC ring is the only multi-entry result backlog. If it is full,
+the worker deasserts result readiness, the RTL register remains valid and stable, and
+the pipeline pauses safely rather than overwrite or drop a result.
+
+Check: direct input is retained until accepted; output data stays stable for any
+number of not-ready cycles; full-ring backpressure, reset, simultaneous handshakes,
+and no-overwrite tests pass; the previous blocking helper is removed after test
+support uses stepping.
+
+### 6.14 Run RTL in its own dedicated thread
+
+Add a `VerilatorWorker` which is the only code allowed to access
+`VerilatorRunner` and the only thread that advances the simulated RTL clock. It feeds
+events directly from an immutable `span<const MarketEvent>` whenever the core input
+is ready and advances its vector index only after acceptance. When an RTL result is
+valid, it reserves an SPSC producer slot, decodes the stable Verilator ports directly
+into that slot, performs the result-ready clock handshake, and atomically publishes
+the completed slot. It checks the update mailbox only at safe event boundaries. Add
+a separate GPU worker as the ring's only consumer.
+The GPU worker removes each published `RtlStreamResult`, copies valid eight-feature
+rows onward, and releases each ring slot immediately; it never holds the ring while
+OpenCL transfers or kernels execute. Sustained full-ring pressure pauses RTL safely
+and fails only after 10 seconds without progress.
+
+Check: no event/result is dropped or reordered under deliberately tiny queues;
+the producer and consumer operate concurrently without slot corruption; worker
+errors propagate and shutdown joins both threads cleanly. The RTL worker continues
+clocking while input is temporarily unavailable and while the GPU worker is busy.
+
+### 6.15 Fill configurable OpenCL batches and prove GPU-to-RTL hand-off
+
+Keep the feature width fixed at eight, but make the number of training rows `N`
+runtime-configurable (default 1,024). The GPU worker fills contiguous mapped OpenCL
+memory in `[sample][feature]` order directly from valid ring results; no separate
+ordinary C++ `FeatureBatch` is required on this live path. It unmaps the full buffer
+before submission, and does not reuse it until its OpenCL work completes. Using one
+OpenCL buffer is correct and intentionally serial; a second device buffer may be
+added later only if measurements justify overlapping collection and training.
+
+After the first complete `N x 8` batch, run one tiny deterministic OpenCL kernel that
+returns a complete version-2 `ModelUpdate`. Publish the validated update to the
+mailbox; the RTL worker pauses only at a safe event boundary, writes the existing
+shadow bank, commits atomically, and resumes.
+
+Check: one update changes active model version 1 to 2; no event observes mixed
+parameters; a newer unread update replaces an older mailbox value; configurable
+batch sizes preserve row/feature order and never overwrite GPU-owned memory.
+
+### 6.16 Complete streaming proof and documentation
+
+Run fixture, random, and one-million-event tests through the new transport.
+Report result-register blocked time, host-ring occupancy/high-water mark,
+backpressure time, valid rows copied, batch completion, mailbox publication, and
+applied-model-version metrics. Compare deliberately tiny SPSC stress capacities with
+the normal 1,024-entry host ring. Update project documentation to mark live streaming
+as the normal path and replay/reference comparison as test-only.
+
+Check: complete stream drains in order, all existing tests pass, and a GPU-less
+machine clearly skips only hardware-dependent OpenCL tests.
+
 ## Phase 7 — Pluggable GPU learning model and parameter updates
 
 ### 7.1 Implement the pending-label queue
 
-Maintain a 32-entry valid-feature sequence ring. Store each complete sequence,
-its current eight-feature vector, reference midpoint, and target event index.
-Reset sequence collection whenever features are invalid.
+For the initial ordinary regression learner, store each valid eight-feature row,
+its reference midpoint, and target event index until its future label becomes known.
+Do not impose a fixed 32-row temporal sequence: `N` is the configurable number of
+labelled samples submitted together for parallel GPU training. A later temporal
+learner may add its own sequence construction behind the same Phase 6 schemas.
 
 Check: label cannot be produced before horizon expiry.
 
@@ -602,16 +717,18 @@ Preserve event order; submit full batches only in v1 and report tail samples.
 
 Check: buffer swap cannot reorder samples.
 
-### 7.6 Keep replay running during GPU work
+### 7.6 Keep live RTL streaming during GPU work
 
-Poll completions once per event loop iteration with no blocking finish/wait.
+Let the GPU worker poll completion without blocking the dedicated RTL worker. The
+host SPSC ring absorbs temporary rate differences and applies safe backpressure only
+if its finite capacity is exhausted.
 
 Check: timing instrumentation contains no steady-state global wait.
 
 ### 7.7 Schedule GPU `ModelUpdate` readback
 
-After every completed training batch, run inference on the latest valid sequence
-and enqueue one complete `ModelUpdate` readback tied to the batch sequence.
+After every completed training batch, derive the complete weights and thresholds and
+enqueue one `ModelUpdate` readback tied to that batch.
 
 Check: no early or duplicate readbacks.
 
@@ -626,7 +743,7 @@ Check: injected invalid value never reaches RTL.
 
 ### 7.9 Hand the update to the Phase 6 coordinator contract
 
-Pass the complete packet to `ReplayCoordinator`; reuse the Phase 6 validation, shadow
+Pass the complete packet to `LiveCoordinator`; reuse the Phase 6 validation, shadow
 bank write, and atomic-commit path. Do not duplicate RTL hand-off logic inside the
 learner.
 
@@ -716,7 +833,7 @@ Check: raw CSV preserves every run.
 
 ### 9.4 Benchmark end-to-end modes
 
-Compare reference-only, RTL-only, RTL+GPU, dashboard off/on, and trace off/on.
+Compare live RTL, live RTL+GPU, dashboard off/on, and trace off/on.
 
 Check: unavailable modes are labelled unavailable, never silently substituted.
 
