@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="920" viewBox="0 0 1440 920">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#334155"/></marker>
+    <style>
+      .title { font: 700 27px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 15px Arial, sans-serif; fill: #475569; }
+      .group { font: 700 18px Arial, sans-serif; fill: #0f172a; }
+      .head { font: 700 15px Arial, sans-serif; fill: #0f172a; }
+      .body { font: 13px Arial, sans-serif; fill: #334155; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .arrowlabel { font: 700 12px Arial, sans-serif; fill: #475569; }
+      .box { stroke-width: 2; rx: 12; }
+    </style>
+  </defs>
+  <rect width="1440" height="920" fill="#f8fafc"/>
+  <text x="720" y="42" text-anchor="middle" class="title">Adaptive FPGA–GPU Market Signal Engine</text>
+  <text x="720" y="68" text-anchor="middle" class="subtitle">Current architecture: C++ coordinates simulated RTL and GPU learning; they never call each other directly.</text>
+
+  <rect x="32" y="102" width="220" height="270" class="box" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="52" y="132" class="group">1. Market input</text>
+  <rect x="52" y="151" width="180" height="90" class="box" fill="#ffffff" stroke="#7dd3fc"/>
+  <text x="67" y="178" class="head">CSV or MKT1 file</text>
+  <text x="67" y="200" class="body">timestamp · event type</text>
+  <text x="67" y="218" class="body">side · price ticks · qty</text>
+  <rect x="52" y="262" width="180" height="84" class="box" fill="#ffffff" stroke="#7dd3fc"/>
+  <text x="67" y="289" class="head">C++ EventReader</text>
+  <text x="67" y="311" class="body">vector&lt;MarketEvent&gt;</text>
+  <text x="67" y="329" class="small">The vector is the input backlog.</text>
+
+  <rect x="302" y="102" width="786" height="418" class="box" fill="#ecfdf5" stroke="#16a34a"/>
+  <text x="324" y="132" class="group">2. RTL worker and SystemVerilog market pipeline</text>
+  <text x="324" y="155" class="small">One dedicated C++ thread clocks Verilator. In real hardware this region would run on an FPGA clock.</text>
+  <rect x="326" y="184" width="138" height="268" class="box" fill="#ffffff" stroke="#86efac"/>
+  <text x="342" y="212" class="head">Event input</text>
+  <text x="342" y="237" class="body">valid / ready</text>
+  <text x="342" y="258" class="body">MarketEvent</text>
+  <text x="342" y="298" class="small">No C++ input queue.</text>
+  <text x="342" y="316" class="small">Worker holds event until</text>
+  <text x="342" y="334" class="small">RTL accepts it.</text>
+  <rect x="486" y="184" width="156" height="268" class="box" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="502" y="212" class="head">Order book</text>
+  <text x="502" y="237" class="body">10 bids / 10 asks</text>
+  <text x="502" y="258" class="body">Add / Update</text>
+  <text x="502" y="278" class="body">Cancel / Trade</text>
+  <text x="502" y="318" class="small">Best bid and ask</text>
+  <text x="502" y="336" class="small">are executable quotes.</text>
+  <rect x="664" y="184" width="156" height="268" class="box" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="680" y="212" class="head">Feature engine</text>
+  <text x="680" y="237" class="body">8 Q16.16 values</text>
+  <text x="680" y="258" class="body">spread · imbalance</text>
+  <text x="680" y="278" class="body">flow · movement</text>
+  <text x="680" y="318" class="small">Feature 7 = constant 1.0</text>
+  <rect x="842" y="184" width="224" height="268" class="box" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="858" y="212" class="head">Strategy + parameter bank</text>
+  <text x="858" y="237" class="body">linear score and BUY/SELL/HOLD</text>
+  <text x="858" y="266" class="body">8 weights + 2 thresholds</text>
+  <text x="858" y="286" class="body">shadow bank → atomic commit</text>
+  <text x="858" y="326" class="small">No mixed old/new model.</text>
+  <path d="M464 320 L486 320" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M642 320 L664 320" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M820 320 L842 320" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="302" y="558" width="786" height="284" class="box" fill="#eff6ff" stroke="#2563eb"/>
+  <text x="324" y="588" class="group">3. C++ streaming transport and GPU learning</text>
+  <rect x="326" y="615" width="164" height="166" class="box" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="342" y="643" class="head">SPSC ring</text>
+  <text x="342" y="667" class="body">RtlStreamResult</text>
+  <text x="342" y="690" class="body">one producer: RTL</text>
+  <text x="342" y="710" class="body">one consumer: GPU</text>
+  <text x="342" y="746" class="small">No global mutex.</text>
+  <rect x="512" y="615" width="206" height="166" class="box" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="528" y="643" class="head">GpuWorker</text>
+  <text x="528" y="667" class="body">waits H future events</text>
+  <text x="528" y="688" class="body">labels BUY / HOLD / SELL</text>
+  <text x="528" y="709" class="body">maps [N][8] + [N]</text>
+  <text x="528" y="746" class="small">N = featureBatchSize</text>
+  <rect x="740" y="615" width="160" height="166" class="box" fill="#f5f3ff" stroke="#8b5cf6"/>
+  <text x="756" y="643" class="head">OpenCL GPU</text>
+  <text x="756" y="667" class="body">linear learner</text>
+  <text x="756" y="688" class="body">fine-tunes weights</text>
+  <text x="756" y="709" class="body">and thresholds</text>
+  <text x="756" y="746" class="small">Persistent model state</text>
+  <rect x="922" y="615" width="144" height="166" class="box" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="938" y="643" class="head">Mailbox</text>
+  <text x="938" y="667" class="body">ModelUpdate</text>
+  <text x="938" y="688" class="body">latest complete</text>
+  <text x="938" y="709" class="body">replacement</text>
+  <text x="938" y="746" class="small">Mutex-protected.</text>
+  <path d="M490 698 L512 698" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M718 698 L740 698" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M900 698 L922 698" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <path d="M252 300 L302 300" stroke="#0284c7" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="263" y="282" class="arrowlabel">MarketEvent</text>
+  <path d="M695 452 L695 558" stroke="#16a34a" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="706" y="515" class="arrowlabel">RtlStreamResult</text>
+  <path d="M994 615 L994 475 L1066 475" stroke="#8b5cf6" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1066 475 L1066 398" stroke="#8b5cf6" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="1082" y="465" class="arrowlabel">complete ModelUpdate</text>
+
+  <rect x="1128" y="102" width="278" height="740" class="box" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="1150" y="132" class="group">What is real today?</text>
+  <text x="1150" y="170" class="head">Implemented</text>
+  <text x="1150" y="195" class="body">• Order book, features, strategy</text>
+  <text x="1150" y="217" class="body">• Verilator RTL worker</text>
+  <text x="1150" y="239" class="body">• SPSC and model mailbox</text>
+  <text x="1150" y="261" class="body">• GPU label + learning code</text>
+  <text x="1150" y="283" class="body">• Atomic RTL updates</text>
+  <text x="1150" y="328" class="head">Still to verify</text>
+  <text x="1150" y="353" class="body">• Run on RTX 4060</text>
+  <text x="1150" y="375" class="body">• Long GPU replay</text>
+  <text x="1150" y="397" class="body">• Tune costs / thresholds</text>
+  <text x="1150" y="419" class="body">• Parallelise learner</text>
+  <text x="1150" y="468" class="head">Important boundary</text>
+  <text x="1150" y="493" class="body">The GPU does learning.</text>
+  <text x="1150" y="515" class="body">C++ only coordinates:</text>
+  <text x="1150" y="537" class="body">queues, labels, validation,</text>
+  <text x="1150" y="559" class="body">and safe RTL hand-off.</text>
+</svg>

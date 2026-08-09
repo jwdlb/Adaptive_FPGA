@@ -9,33 +9,30 @@ The C++ reference/replay model is test support, not the normal live path.
 
 ## System overview
 
+![Coloured architecture overview](docs/architecture_overview.svg)
+
+The diagram is deliberately split into three boundaries:
+
+| Boundary | What crosses it | Why it exists |
+| --- | --- | --- |
+| Market data → RTL | `MarketEvent` | Gives the order book its raw event stream. |
+| RTL → GPU | `RtlStreamResult` through the SPSC ring | Lets RTL produce results without waiting for GPU work. |
+| GPU → RTL | complete `ModelUpdate` through the mailbox | Prevents partial or unsafe model updates. |
+
+### The important idea
+
+The project is not “GPU calls FPGA” or “RTL calls GPU.” They cannot safely
+share memory or call one another. C++ is a thin coordinator around two separate
+workers:
+
 ```text
- CSV / MKT1 market data
-          |
-          v
- Event reader -> vector<MarketEvent> -> dedicated VerilatorWorker
-                                             |
-                                             | direct valid/ready input
-                                             v
- +-------------------------- RTL -----------------------------------+
- | order book -> feature engine -> strategy -> held output register |
- +-------------------------------------------------------------------+
-                                             |
-                                             | RtlStreamResult
-                                             v
-              SPSC ring: one RTL producer, one GPU consumer
-                                             |
-                                             v
- +----------------------- GPU worker -------------------------------+
- | delayed labels -> mapped [N][8] features + [N] labels            |
- +-------------------------------------------------------------------+
-                                             |
-                                             v
-          OpenCL GPU learner -> complete ModelUpdate
-                                             |
-                                             v
-        ModelUpdateMailbox -> RTL shadow bank -> atomic commit
+VerilatorWorker thread: clocks RTL and produces results.
+GpuWorker thread:       consumes results, labels/trains, publishes updates.
 ```
+
+The SPSC ring is the one-way high-speed path from RTL to GPU. The mailbox is
+the one-way latest-model path from GPU back to RTL. This makes ownership clear
+and avoids corrupting data while another worker is using it.
 
 RTL and GPU code never call each other directly. C++ owns the ring, mailbox,
 validation, and shutdown between them.
@@ -51,6 +48,22 @@ validation, and shutdown between them.
 - [Event format and fixed-point rules](docs/protocol.md)
 - [C++ reference-model semantics](docs/reference_model.md)
 
+## What the model is trying to learn
+
+At one event, the model sees eight order-book-derived features. It cannot know
+the answer yet, so the GPU worker waits `labelHorizonEvents` future events and
+asks a practical question:
+
+```text
+Would buying at the old best ask, then selling at the later best bid,
+have cleared the minimum profit?
+```
+
+The mirrored question creates SELL labels. If neither trade would have made
+enough, the label is HOLD. The GPU trains a small linear model on these answers
+and returns the full set of weights and thresholds. Read the detailed
+[GPU model guide](docs/gpu_model.md).
+
 ## Current status
 
 - The normal path is CSV → RTL → SPSC → GPU → mailbox → RTL.
@@ -59,6 +72,14 @@ validation, and shutdown between them.
   OpenCL GPU; verify it on the RTX 4060 machine.
 - `featureBatchSize` is the GPU batch size `N`; `labelHorizonEvents` is the
   future look-ahead distance.
+
+### What is intentionally not claimed yet
+
+- A physical FPGA board is not connected; RTL is being simulated by Verilator.
+- GPU learning has not been executed on this WSL machine because no usable GPU
+  is available here.
+- The first learner is a simple, understandable baseline. It is not yet a
+  highly parallel RTX-optimised learner or a proven profitable trading system.
 
 ## Build and run
 

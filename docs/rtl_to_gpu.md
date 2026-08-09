@@ -40,3 +40,41 @@ labels:   [N]    Q16.16
 
 `N` is `featureBatchSize`, normally 1024. The GPU never reads directly from a
 ring slot.
+
+## Ownership picture
+
+```text
+RTL worker owns a result
+       |
+       | reserve SPSC slot, write it, publish it
+       v
+GPU worker owns a readable SPSC slot
+       |
+       | copy small result into its pending-label list
+       | finish_pop: slot is free immediately
+       v
+GPU worker owns mapped OpenCL memory
+       |
+       | fill one labelled row in [N][8] and [N]
+       v
+GPU owns unmapped OpenCL memory while kernel runs
+```
+
+This distinction matters: the GPU can train for much longer than it takes to
+copy one tiny `RtlStreamResult`. It must never hold the SPSC slot while training
+or it would block RTL from publishing later results.
+
+## What is inside one result
+
+```text
+verilator::RtlStreamResult
+├─ uint64 event_index
+├─ uint64 timestamp_ns
+├─ market::BookError error
+├─ market::FeatureVector
+│  ├─ bool valid
+│  └─ array<int32, 8> values       (Q16.16)
+└─ top-of-book label context
+   ├─ bid price / quantity
+   └─ ask price / quantity
+```
