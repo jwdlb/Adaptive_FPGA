@@ -9,6 +9,7 @@
 #include "gpu/gpu_model.hpp"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -126,6 +127,7 @@ public:
     std::array<std::int32_t, market::FeatureVector::kFeatureCount + 2U> stream_update_values{};
     std::array<std::int64_t, 3U> stream_training_metrics{};
     std::optional<std::uint64_t> pending_stream_update_version{};
+    std::optional<std::chrono::steady_clock::time_point> training_started{};
 
     // Create every OpenCL resource needed by the reusable smoke-test operation.
     explicit Impl(app::OpenclDeviceInfo device) : selected_device(std::move(device)) {
@@ -138,7 +140,7 @@ public:
             check_opencl(status, "creating OpenCL context");
 
             // The command queue orders copies and kernel launches sent to this GPU.
-            const cl_queue_properties queue_properties[] = {0};
+            const cl_queue_properties queue_properties[] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
             queue = clCreateCommandQueueWithProperties(context, device_id, queue_properties, &status);
             check_opencl(status, "creating OpenCL command queue");
 
@@ -540,9 +542,39 @@ public:
                                          1, &stream_reduce_complete, &stream_read_complete), "reading GPU trained model");
         check_opencl(clFlush(queue), "starting GPU linear training");
         pending_stream_update_version = version;
+        training_started = std::chrono::steady_clock::now();
     }
 
-    [[nodiscard]] std::optional<ModelUpdate> poll_training_update() { return poll_phase6_model_update(); }
+    [[nodiscard]] static double event_ms(cl_event event) noexcept {
+        cl_ulong start{}; cl_ulong end{};
+        if (event == nullptr || clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_START, sizeof(start), &start, nullptr) != CL_SUCCESS ||
+            clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_END, sizeof(end), &end, nullptr) != CL_SUCCESS || end < start) return 0.0;
+        return static_cast<double>(end - start) / 1'000'000.0;
+    }
+
+    [[nodiscard]] std::optional<TrainingUpdate> poll_training_update() {
+        if (!pending_stream_update_version) return std::nullopt;
+        cl_int status = CL_QUEUED;
+        check_opencl(clGetEventInfo(stream_read_complete, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(status), &status, nullptr),
+                     "polling GPU regression update");
+        if (status < 0) throw std::runtime_error("GPU regression update failed (OpenCL error " + std::to_string(status) + ")");
+        if (status != CL_COMPLETE) return std::nullopt;
+        TrainingUpdate result{};
+        result.model.update_version = *pending_stream_update_version;
+        for (std::size_t index = 0; index < result.model.weights.size(); ++index) result.model.weights[index] = stream_update_values[index];
+        result.model.buy_threshold = stream_update_values[result.model.weights.size()];
+        result.model.sell_threshold = stream_update_values[result.model.weights.size() + 1U];
+        result.metrics = {.squared_error_sum_q16 = stream_training_metrics[0],
+                          .correct_predictions = static_cast<std::uint64_t>(stream_training_metrics[1]),
+                          .rows = static_cast<std::uint64_t>(stream_training_metrics[2])};
+        result.timing = {.upload_ms = event_ms(stream_unmap_complete),
+                         .kernel_ms = event_ms(stream_kernel_complete) + event_ms(stream_reduce_complete),
+                         .readback_ms = event_ms(stream_read_complete),
+                         .end_to_end_ms = training_started ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *training_started).count() : 0.0};
+        release_event(stream_read_complete); release_event(stream_reduce_complete); release_event(stream_kernel_complete); release_event(stream_unmap_complete);
+        pending_stream_update_version.reset(); training_started.reset();
+        return result;
+    }
 
     void discard_training_batch() {
         if (mapped_stream_values == nullptr && mapped_stream_labels == nullptr) return;
@@ -649,7 +681,7 @@ void GpuModel::submit_training_batch(const std::uint64_t version, const std::int
 #endif
 }
 
-std::optional<ModelUpdate> GpuModel::poll_training_update() {
+std::optional<TrainingUpdate> GpuModel::poll_training_update() {
 #if !MARKET_ENGINE_HAS_OPENCL
     throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
 #else

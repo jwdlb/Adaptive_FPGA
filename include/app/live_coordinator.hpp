@@ -35,6 +35,13 @@ struct LiveResult {
     std::size_t gpu_valid_feature_rows_copied{};
     std::size_t gpu_batches_submitted{};
     std::size_t gpu_model_updates_published{};
+    std::int64_t gpu_squared_error_sum_q16{};
+    std::uint64_t gpu_correct_predictions{};
+    std::uint64_t gpu_training_rows{};
+    double gpu_kernel_ms{};
+    double gpu_upload_ms{};
+    double gpu_readback_ms{};
+    double gpu_update_latency_ms{};
     std::size_t rtl_model_updates_applied{};
 };
 

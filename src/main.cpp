@@ -117,6 +117,12 @@ int main(int argc, char* argv[]) {
                   << "  GPU valid feature rows copied: " << live.gpu_valid_feature_rows_copied << '\n'
                   << "  GPU batches submitted: " << live.gpu_batches_submitted << '\n'
                   << "  GPU model updates published: " << live.gpu_model_updates_published << '\n'
+                  << "  GPU batch squared error (Q16.16): " << live.gpu_squared_error_sum_q16 << '\n'
+                  << "  GPU batch accuracy: " << (live.gpu_training_rows == 0U ? 0.0 :
+                      static_cast<double>(live.gpu_correct_predictions) / live.gpu_training_rows) << '\n'
+                  << "  GPU upload/kernel/readback ms: " << live.gpu_upload_ms << '/' << live.gpu_kernel_ms
+                  << '/' << live.gpu_readback_ms << '\n'
+                  << "  GPU update latency ms: " << live.gpu_update_latency_ms << '\n'
                   << "  RTL model updates applied: " << live.rtl_model_updates_applied << '\n'
                   << "  final checksum: 0x" << std::hex << checksum << std::dec << '\n'
                   << "  final signal: " << market_engine::market::to_string(live.final_rtl.signal.action)

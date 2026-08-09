@@ -131,6 +131,13 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
         result.gpu_valid_feature_rows_copied = gpu_metrics.valid_feature_rows_copied;
         result.gpu_batches_submitted = gpu_metrics.batches_submitted;
         result.gpu_model_updates_published = gpu_metrics.model_updates_published;
+        result.gpu_squared_error_sum_q16 = gpu_metrics.latest_squared_error_sum_q16;
+        result.gpu_correct_predictions = gpu_metrics.latest_correct_predictions;
+        result.gpu_training_rows = gpu_metrics.latest_training_rows;
+        result.gpu_kernel_ms = gpu_metrics.latest_kernel_ms;
+        result.gpu_upload_ms = gpu_metrics.latest_upload_ms;
+        result.gpu_readback_ms = gpu_metrics.latest_readback_ms;
+        result.gpu_update_latency_ms = gpu_metrics.latest_update_latency_ms;
     } else {
         // A non-GPU live run still needs one ring consumer: it releases compact
         // RTL results as soon as they arrive, without building CPU batches or

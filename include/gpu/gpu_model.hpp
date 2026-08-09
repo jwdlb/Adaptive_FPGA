@@ -14,6 +14,7 @@
 
 #include "app/opencl_devices.hpp"
 #include "gpu/gpu_protocol.hpp"
+#include "gpu/regression_oracle.hpp"
 
 namespace market_engine::gpu {
 
@@ -38,6 +39,19 @@ struct GpuSmokeTestResult {
 struct MappedTrainingBatch {
     std::span<std::int32_t> features{};
     std::span<std::int32_t> labels{};
+};
+
+struct TrainingTiming {
+    double upload_ms{};
+    double kernel_ms{};
+    double readback_ms{};
+    double end_to_end_ms{};
+};
+
+struct TrainingUpdate {
+    ModelUpdate model{};
+    RegressionMetrics metrics{};
+    TrainingTiming timing{};
 };
 
 // Owns the reusable OpenCL connection for a selected GPU. It deliberately
@@ -96,7 +110,7 @@ public:
     // persistent linear weights and BUY/SELL thresholds. The GPU returns a full
     // replacement ModelUpdate through the existing poll/mailbox path.
     void submit_training_batch(std::uint64_t version, std::int32_t learning_rate_q16, std::int32_t l2_q16 = 0);
-    [[nodiscard]] std::optional<ModelUpdate> poll_training_update();
+    [[nodiscard]] std::optional<TrainingUpdate> poll_training_update();
     void discard_training_batch();
 
 private:

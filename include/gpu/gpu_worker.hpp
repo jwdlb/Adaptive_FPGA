@@ -25,6 +25,13 @@ struct GpuWorkerMetrics {
     std::size_t batches_submitted{};
     std::size_t model_updates_published{};
     std::size_t labelled_rows_created{};
+    std::int64_t latest_squared_error_sum_q16{};
+    std::uint64_t latest_correct_predictions{};
+    std::uint64_t latest_training_rows{};
+    double latest_kernel_ms{};
+    double latest_upload_ms{};
+    double latest_readback_ms{};
+    double latest_update_latency_ms{};
 };
 
 class GpuWorker {

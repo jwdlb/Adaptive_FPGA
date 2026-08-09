@@ -81,10 +81,17 @@ void GpuWorker::consume_result(const verilator::RtlStreamResult& result) {
 
 void GpuWorker::poll_model_update() {
     if (!model_update_in_flight_) return;
-    const std::optional<ModelUpdate> update = model_.poll_training_update();
+    const std::optional<TrainingUpdate> update = model_.poll_training_update();
     if (!update) return;
-    update_mailbox_.publish(*update);
-    next_update_version_ = update->update_version + 1U;
+    update_mailbox_.publish(update->model);
+    next_update_version_ = update->model.update_version + 1U;
+    metrics_.latest_squared_error_sum_q16 = update->metrics.squared_error_sum_q16;
+    metrics_.latest_correct_predictions = update->metrics.correct_predictions;
+    metrics_.latest_training_rows = update->metrics.rows;
+    metrics_.latest_kernel_ms = update->timing.kernel_ms;
+    metrics_.latest_upload_ms = update->timing.upload_ms;
+    metrics_.latest_readback_ms = update->timing.readback_ms;
+    metrics_.latest_update_latency_ms = update->timing.end_to_end_ms;
     model_update_in_flight_ = false;
     ++metrics_.model_updates_published;
 }
