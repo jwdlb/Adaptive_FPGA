@@ -96,6 +96,7 @@ public:
     cl_command_queue queue{nullptr};
     cl_program program{nullptr};
     cl_kernel smoke_kernel{nullptr};
+    cl_kernel phase6_update_kernel{nullptr};
     cl_mem input_buffer{nullptr};
     cl_mem output_buffer{nullptr};
     cl_event input_complete{nullptr};
@@ -106,6 +107,20 @@ public:
     std::array<cl_mem, FeatureBufferPool::kBufferCount> feature_input_buffers{};
     std::array<cl_event, FeatureBufferPool::kBufferCount> feature_upload_complete{};
     std::size_t buffer_capacity{0};
+
+    // Streaming-path OpenCL objects. The input buffer is allocated with host
+    // mapping support so GpuWorker can write its `[N][8]` values directly into
+    // OpenCL-visible memory instead of first building another CPU FeatureBatch.
+    cl_mem stream_input_buffer{nullptr};
+    cl_mem stream_update_buffer{nullptr};
+    cl_event stream_unmap_complete{nullptr};
+    cl_event stream_kernel_complete{nullptr};
+    cl_event stream_read_complete{nullptr};
+    std::int32_t* mapped_stream_values{nullptr};
+    std::size_t mapped_stream_rows{0};
+    std::size_t stream_capacity_rows{0};
+    std::array<std::int32_t, market::FeatureVector::kFeatureCount + 2U> stream_update_values{};
+    std::optional<std::uint64_t> pending_stream_update_version{};
 
     // Create every OpenCL resource needed by the reusable smoke-test operation.
     explicit Impl(app::OpenclDeviceInfo device) : selected_device(std::move(device)) {
@@ -138,6 +153,8 @@ public:
             // Obtain the compiled function named `double_values` from the program.
             smoke_kernel = clCreateKernel(program, "double_values", &status);
             check_opencl(status, "creating double_values OpenCL kernel");
+            phase6_update_kernel = clCreateKernel(program, "phase6_model_update", &status);
+            check_opencl(status, "creating phase6_model_update OpenCL kernel");
 
             // Allocate the two actual OpenCL input buffers now. They are kept on
             // the selected GPU and later learner kernels will read from them.
@@ -160,6 +177,30 @@ public:
 
     // Release owned OpenCL objects and reset their handles to prevent reuse.
     void cleanup() noexcept {
+        // A mapped OpenCL buffer must be unmapped before its queue/context is
+        // released. Cleanup cannot report an error, so finish any best-effort
+        // unmap here and then continue releasing every remaining resource.
+        if (mapped_stream_values != nullptr && queue != nullptr && stream_input_buffer != nullptr) {
+            cl_event unmap_event{nullptr};
+            if (clEnqueueUnmapMemObject(queue, stream_input_buffer, mapped_stream_values, 0, nullptr,
+                                        &unmap_event) == CL_SUCCESS) {
+                clWaitForEvents(1, &unmap_event);
+                clReleaseEvent(unmap_event);
+            }
+            mapped_stream_values = nullptr;
+            mapped_stream_rows = 0;
+        }
+        release_event(stream_read_complete);
+        release_event(stream_kernel_complete);
+        release_event(stream_unmap_complete);
+        if (stream_update_buffer != nullptr) {
+            clReleaseMemObject(stream_update_buffer);
+            stream_update_buffer = nullptr;
+        }
+        if (stream_input_buffer != nullptr) {
+            clReleaseMemObject(stream_input_buffer);
+            stream_input_buffer = nullptr;
+        }
         // Completion events refer to operations using the buffers, so release them first.
         release_event(output_complete);
         release_event(kernel_complete);
@@ -183,6 +224,10 @@ public:
             clReleaseKernel(smoke_kernel);
             smoke_kernel = nullptr;
         }
+        if (phase6_update_kernel != nullptr) {
+            clReleaseKernel(phase6_update_kernel);
+            phase6_update_kernel = nullptr;
+        }
         if (program != nullptr) {
             clReleaseProgram(program);
             program = nullptr;
@@ -196,6 +241,8 @@ public:
             context = nullptr;
         }
         buffer_capacity = 0;
+        stream_capacity_rows = 0;
+        pending_stream_update_version.reset();
     }
 
     // Ensure the reusable device buffers can hold `count` float values.
@@ -317,6 +364,137 @@ public:
         return true;
     }
 
+    // Ensure the reusable mapped OpenCL input and small update-output buffer are
+    // large enough for `rows` by eight Q16.16 feature values.
+    void ensure_stream_capacity(const std::size_t rows) {
+        if (rows == 0U) throw std::invalid_argument("GPU streaming batch must contain at least one row");
+        if (rows <= stream_capacity_rows) return;
+        if (mapped_stream_values != nullptr || pending_stream_update_version) {
+            throw std::logic_error("cannot resize a mapped or in-flight GPU streaming buffer");
+        }
+        if (rows > std::numeric_limits<std::size_t>::max() /
+                       (market::FeatureVector::kFeatureCount * sizeof(std::int32_t))) {
+            throw std::runtime_error("GPU streaming batch is too large");
+        }
+        if (stream_update_buffer != nullptr) {
+            clReleaseMemObject(stream_update_buffer);
+            stream_update_buffer = nullptr;
+        }
+        if (stream_input_buffer != nullptr) {
+            clReleaseMemObject(stream_input_buffer);
+            stream_input_buffer = nullptr;
+        }
+
+        const std::size_t input_bytes = rows * market::FeatureVector::kFeatureCount * sizeof(std::int32_t);
+        cl_int status = CL_SUCCESS;
+        stream_input_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
+                                             input_bytes, nullptr, &status);
+        check_opencl(status, "creating mapped GPU streaming input buffer");
+        stream_update_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY,
+                                              stream_update_values.size() * sizeof(std::int32_t), nullptr, &status);
+        check_opencl(status, "creating GPU streaming model-update buffer");
+        stream_capacity_rows = rows;
+    }
+
+    [[nodiscard]] std::span<std::int32_t> map_stream_feature_rows(const std::size_t rows) {
+        if (mapped_stream_values != nullptr) {
+            throw std::logic_error("GPU streaming input is already mapped for filling");
+        }
+        if (pending_stream_update_version) {
+            throw std::logic_error("cannot map GPU streaming input while its prior update is in flight");
+        }
+        ensure_stream_capacity(rows);
+        const std::size_t value_count = rows * market::FeatureVector::kFeatureCount;
+        cl_int status = CL_SUCCESS;
+        mapped_stream_values = static_cast<std::int32_t*>(clEnqueueMapBuffer(
+            queue, stream_input_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+            value_count * sizeof(std::int32_t), 0, nullptr, nullptr, &status));
+        check_opencl(status, "mapping GPU streaming input buffer");
+        mapped_stream_rows = rows;
+        return {mapped_stream_values, value_count};
+    }
+
+    void submit_phase6_model_update(const std::uint64_t version) {
+        if (mapped_stream_values == nullptr || mapped_stream_rows == 0U) {
+            throw std::logic_error("cannot submit an unmapped or empty GPU streaming batch");
+        }
+        if (version == 0U) throw std::invalid_argument("GPU model-update version must be positive");
+        if (pending_stream_update_version) {
+            throw std::logic_error("GPU streaming model update is already in flight");
+        }
+        const std::size_t feature_count = mapped_stream_rows * market::FeatureVector::kFeatureCount;
+        if (feature_count > std::numeric_limits<cl_uint>::max()) {
+            throw std::runtime_error("GPU streaming batch has too many feature values");
+        }
+
+        release_event(stream_read_complete);
+        release_event(stream_kernel_complete);
+        release_event(stream_unmap_complete);
+        check_opencl(clEnqueueUnmapMemObject(queue, stream_input_buffer, mapped_stream_values,
+                                             0, nullptr, &stream_unmap_complete),
+                     "unmapping GPU streaming input buffer");
+        mapped_stream_values = nullptr;
+        mapped_stream_rows = 0U;
+
+        const cl_uint opencl_feature_count = static_cast<cl_uint>(feature_count);
+        check_opencl(clSetKernelArg(phase6_update_kernel, 0, sizeof(stream_input_buffer), &stream_input_buffer),
+                     "setting Phase 6 kernel input");
+        check_opencl(clSetKernelArg(phase6_update_kernel, 1, sizeof(stream_update_buffer), &stream_update_buffer),
+                     "setting Phase 6 kernel output");
+        check_opencl(clSetKernelArg(phase6_update_kernel, 2, sizeof(opencl_feature_count), &opencl_feature_count),
+                     "setting Phase 6 kernel feature count");
+        constexpr std::size_t global_size{1U};
+        check_opencl(clEnqueueNDRangeKernel(queue, phase6_update_kernel, 1, nullptr, &global_size, nullptr,
+                                            1, &stream_unmap_complete, &stream_kernel_complete),
+                     "running Phase 6 GPU model-update kernel");
+        check_opencl(clEnqueueReadBuffer(queue, stream_update_buffer, CL_FALSE, 0,
+                                         stream_update_values.size() * sizeof(std::int32_t),
+                                         stream_update_values.data(), 1, &stream_kernel_complete,
+                                         &stream_read_complete),
+                     "reading Phase 6 GPU model update");
+        check_opencl(clFlush(queue), "starting Phase 6 GPU model update");
+        pending_stream_update_version = version;
+    }
+
+    [[nodiscard]] std::optional<ModelUpdate> poll_phase6_model_update() {
+        if (!pending_stream_update_version) return std::nullopt;
+
+        cl_int execution_status = CL_QUEUED;
+        check_opencl(clGetEventInfo(stream_read_complete, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                                    sizeof(execution_status), &execution_status, nullptr),
+                     "polling Phase 6 GPU model update");
+        if (execution_status < 0) {
+            throw std::runtime_error("Phase 6 GPU model update failed (OpenCL error " +
+                                     std::to_string(execution_status) + ")");
+        }
+        if (execution_status != CL_COMPLETE) return std::nullopt;
+
+        ModelUpdate update{};
+        update.update_version = *pending_stream_update_version;
+        for (std::size_t index = 0; index < update.weights.size(); ++index) {
+            update.weights[index] = stream_update_values[index];
+        }
+        update.buy_threshold = stream_update_values[update.weights.size()];
+        update.sell_threshold = stream_update_values[update.weights.size() + 1U];
+        release_event(stream_read_complete);
+        release_event(stream_kernel_complete);
+        release_event(stream_unmap_complete);
+        pending_stream_update_version.reset();
+        return update;
+    }
+
+    void discard_stream_feature_rows() {
+        if (mapped_stream_values == nullptr) return;
+        cl_event unmap_complete{nullptr};
+        check_opencl(clEnqueueUnmapMemObject(queue, stream_input_buffer, mapped_stream_values,
+                                             0, nullptr, &unmap_complete),
+                     "discarding mapped GPU streaming input buffer");
+        mapped_stream_values = nullptr;
+        mapped_stream_rows = 0U;
+        check_opencl(clWaitForEvents(1, &unmap_complete), "waiting to discard GPU streaming input buffer");
+        release_event(unmap_complete);
+    }
+
 private:
     // Release one optional OpenCL event and clear its handle.
     static void release_event(cl_event& event) noexcept {
@@ -374,6 +552,40 @@ bool GpuModel::poll_feature_upload_finished(FeatureBufferPool& host_buffers, con
     throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
 #else
     return impl_->poll_feature_upload_finished(host_buffers, buffer_index);
+#endif
+}
+
+std::span<std::int32_t> GpuModel::map_stream_feature_rows(const std::size_t rows) {
+#if !MARKET_ENGINE_HAS_OPENCL
+    static_cast<void>(rows);
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    return impl_->map_stream_feature_rows(rows);
+#endif
+}
+
+void GpuModel::submit_phase6_model_update(const std::uint64_t version) {
+#if !MARKET_ENGINE_HAS_OPENCL
+    static_cast<void>(version);
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    impl_->submit_phase6_model_update(version);
+#endif
+}
+
+std::optional<ModelUpdate> GpuModel::poll_phase6_model_update() {
+#if !MARKET_ENGINE_HAS_OPENCL
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    return impl_->poll_phase6_model_update();
+#endif
+}
+
+void GpuModel::discard_stream_feature_rows() {
+#if !MARKET_ENGINE_HAS_OPENCL
+    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
+#else
+    impl_->discard_stream_feature_rows();
 #endif
 }
 

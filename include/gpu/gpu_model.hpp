@@ -14,6 +14,7 @@
 
 #include "app/opencl_devices.hpp"
 #include "gpu/feature_buffers.hpp"
+#include "gpu/gpu_protocol.hpp"
 
 namespace market_engine::gpu {
 
@@ -72,6 +73,24 @@ public:
     // make the paired host slot Free. A later learner will extend this tracking
     // so the slot is freed only after the learner finishes reading it too.
     [[nodiscard]] bool poll_feature_upload_finished(FeatureBufferPool& host_buffers, std::size_t buffer_index);
+
+    // Map one configurable `[sample][8 features]` OpenCL input buffer for C++
+    // writes. GpuWorker fills this memory directly from SPSC results; there is no
+    // intermediate CPU FeatureBatch. The returned span contains rows * 8 Q16.16
+    // values and remains valid only until submit_phase6_model_update() or
+    // discard_stream_feature_rows() is called.
+    [[nodiscard]] std::span<std::int32_t> map_stream_feature_rows(std::size_t rows);
+    // Unmap the completed streaming input, run the deterministic Phase 6 kernel,
+    // and start an asynchronous readback of one complete ModelUpdate. `version`
+    // labels this whole replacement model; Phase 7 will replace the kernel with
+    // real learning while preserving this method's input/output contract.
+    void submit_phase6_model_update(std::uint64_t version);
+    // Return a completed Phase 6 update only after its OpenCL readback event has
+    // finished. An empty optional means GPU work is still running.
+    [[nodiscard]] std::optional<ModelUpdate> poll_phase6_model_update();
+    // Discard a partially filled mapped input during orderly shutdown. No GPU
+    // kernel is run and the same buffer becomes available for a future batch.
+    void discard_stream_feature_rows();
 
 private:
     class Impl;

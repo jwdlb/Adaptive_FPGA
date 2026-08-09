@@ -98,6 +98,7 @@ add_library(market_engine_app    # Separates reusable application code from the 
     src/app/opencl_devices.cpp
     src/app/live_coordinator.cpp
     src/gpu/gpu_model.cpp
+    src/gpu/gpu_worker.cpp
     src/gpu/gpu_protocol.cpp
     src/gpu/model_update_mailbox.cpp
     src/gpu/feature_buffers.cpp
