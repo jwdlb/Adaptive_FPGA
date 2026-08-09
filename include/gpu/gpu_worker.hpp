@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <optional>
 #include <span>
 
@@ -36,6 +37,7 @@ struct GpuWorkerMetrics {
 
 class GpuWorker {
 public:
+    using MetricsCallback = std::function<void(const GpuWorkerMetrics&)>;
     GpuWorker(GpuModel& model,
               app::SpscRingBuffer<verilator::RtlStreamResult>& result_ring,
               ModelUpdateMailbox& update_mailbox,
@@ -44,7 +46,8 @@ public:
               std::uint64_t label_horizon_events = 100U,
               std::int32_t minimum_profit_ticks = 1,
               std::int32_t learning_rate_q16 = 66,
-              std::int32_t l2_q16 = 0);
+              std::int32_t l2_q16 = 0,
+              MetricsCallback metrics_callback = {});
 
     GpuWorker(const GpuWorker&) = delete;
     GpuWorker& operator=(const GpuWorker&) = delete;
@@ -86,6 +89,7 @@ private:
     std::atomic_bool input_complete_{false};
     std::atomic_bool stop_requested_{false};
     GpuWorkerMetrics metrics_{};
+    MetricsCallback metrics_callback_;
 };
 
 }  // namespace market_engine::gpu

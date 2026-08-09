@@ -15,10 +15,12 @@ VerilatorWorker::VerilatorWorker(
     app::SpscRingBuffer<RtlStreamResult>& result_ring,
     gpu::ModelUpdateMailbox& update_mailbox,
     const std::chrono::steady_clock::duration backpressure_timeout,
-    std::function<void(const market::ModelParameters&)> model_applied)
+    std::function<void(const market::ModelParameters&)> model_applied,
+    ObservationCallback observation)
     : events_(events), result_ring_(result_ring), update_mailbox_(update_mailbox),
       runner_(clock_period_ns), active_parameters_(std::move(initial_parameters)),
-      backpressure_timeout_(backpressure_timeout), model_applied_(std::move(model_applied)) {
+      backpressure_timeout_(backpressure_timeout), model_applied_(std::move(model_applied)),
+      observation_(std::move(observation)) {
     if (backpressure_timeout_ <= std::chrono::steady_clock::duration::zero()) {
         throw std::invalid_argument("RTL result backpressure timeout must be positive");
     }
@@ -76,6 +78,7 @@ void VerilatorWorker::run() {
                 // high and ready is low. Decode straight into SPSC storage before
                 // the handshake clock releases the RTL register.
                 runner_.read_stream_result_into(*reserved_result_slot);
+                if (reserved_result_slot->error != market::BookError::None) ++metrics_.error_events;
                 accept_stream_result = true;
 
                 if (backpressure_started) {
@@ -116,6 +119,12 @@ void VerilatorWorker::run() {
             }
             result_ring_.publish_push();
             ++metrics_.stream_results_published;
+            // Dashboard observation is deliberately sampled: no allocation,
+            // serialization, socket IO, or mutex operation occurs per event.
+            if (observation_ && (metrics_.stream_results_published % 256U == 0U)) {
+                metrics_.rtl_cycles = runner_.metrics().cycles;
+                observation_(runner_.latest(), active_parameters_, metrics_);
+            }
         }
 
         if (step.input_accepted) {
@@ -136,6 +145,7 @@ void VerilatorWorker::run() {
     }
     stream_drained_.store(true, std::memory_order_release);
     metrics_.rtl_cycles = runner_.metrics().cycles;
+    if (observation_) observation_(runner_.latest(), active_parameters_, metrics_);
 }
 
 void VerilatorWorker::request_stop() noexcept {

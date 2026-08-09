@@ -7,10 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 
 #include "app/config.hpp"
+#include "app/dashboard_snapshot.hpp"
 #include "market/order_book.hpp"
 #include "verilator/verilator_runner.hpp"
 
@@ -58,7 +60,9 @@ public:
                                  std::optional<std::uint64_t> event_limit,
                                  gpu::GpuModel* gpu_model = nullptr,
                                  std::optional<market::ModelParameters> initial_model = std::nullopt,
-                                 std::function<void(const market::ModelParameters&)> model_applied = {}) const;
+                                 std::function<void(const market::ModelParameters&)> model_applied = {},
+                                 std::shared_ptr<DashboardSnapshotStore> dashboard_snapshots = nullptr,
+                                 std::string input_name = {}) const;
 
 private:
     Config config_;

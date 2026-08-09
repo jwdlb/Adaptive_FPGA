@@ -1,11 +1,21 @@
+#include <atomic>
+#include <condition_variable>
+#include <csignal>
+#include <deque>
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+
 #include "app/config.hpp"
+#include "app/dashboard_server.hpp"
 #include "app/live_coordinator.hpp"
+#include "app/market_data_generator.hpp"
 #include "app/model_store.hpp"
 #include "app/opencl_devices.hpp"
 #include "gpu/gpu_model.hpp"
@@ -16,6 +26,79 @@ namespace {
 using namespace std;
 // Creates a constant that is known at compile time and cannot be changed at runtime, std:string_view is a lightweight, read-only view of text. It does not own or copy the string. It simply refers to the existing characters.
 constexpr string_view kVersion{"0.1.0"};
+std::atomic_bool stop_dashboard{false};
+void handle_stop_signal(int) { stop_dashboard.store(true, std::memory_order_relaxed); }
+
+class DashboardCommands {
+public:
+    DashboardCommands(market_engine::app::RuntimeOptions options,
+                      std::shared_ptr<market_engine::app::DashboardSnapshotStore> snapshots)
+        : options_(std::move(options)), snapshots_(std::move(snapshots)), worker_([this] { work(); }) {}
+    ~DashboardCommands() {
+        { std::lock_guard lock(mutex_); stopping_ = true; }
+        ready_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+    std::string submit(std::string_view body) {
+        const auto command = nlohmann::json::parse(body);
+        if (!command.is_object()) throw std::invalid_argument("control command must be a JSON object");
+        const std::string action = command.value("action", "");
+        if (action != "generate" && action != "run") throw std::invalid_argument("action must be generate or run");
+        if ((action == "generate" && command.value("output", "").empty()) ||
+            (action == "run" && command.value("input", "").empty())) throw std::invalid_argument("a file path is required");
+        if (command.contains("events") && command.at("events").get<std::uint64_t>() == 0U) {
+            throw std::invalid_argument("events must be positive");
+        }
+        std::lock_guard lock(mutex_);
+        if (commands_.size() >= 8U) throw std::runtime_error("dashboard command queue is full");
+        commands_.push_back(command); ready_.notify_one();
+        return nlohmann::json{{"accepted", true}, {"action", action}, {"queued", commands_.size()}}.dump();
+    }
+private:
+    void publish_state(std::string state) {
+        auto snapshot = *snapshots_->latest(); snapshot.state = std::move(state);
+        snapshot.published_at_unix_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+        snapshots_->publish(std::move(snapshot));
+    }
+    void work() {
+        while (true) {
+            nlohmann::json command;
+            {
+                std::unique_lock lock(mutex_); ready_.wait(lock, [this] { return stopping_ || !commands_.empty(); });
+                if (stopping_) return;
+                command = std::move(commands_.front()); commands_.pop_front();
+            }
+            try {
+                if (command.at("action") == "generate") {
+                    publish_state("generating");
+                    const auto count = command.value<std::uint64_t>("events", 100000U);
+                    market_engine::app::generate_market_csv(command.at("output").get<std::string>(),
+                                                            command.value<std::uint64_t>("seed", options_.config.random_seed), count);
+                    publish_state("idle");
+                } else {
+                    const std::filesystem::path input = command.at("input").get<std::string>();
+                    const auto events = market_engine::io::read_events(input);
+                    std::optional<std::uint64_t> limit;
+                    if (command.contains("events")) limit = command.at("events").get<std::uint64_t>();
+                    std::optional<market_engine::gpu::GpuModel> gpu;
+                    if (command.value("gpu", false)) {
+                        gpu.emplace(options_.gpu_index, options_.gpu_name ? std::optional<std::string_view>(*options_.gpu_name) : std::nullopt);
+                    }
+                    const market_engine::app::LiveCoordinator coordinator(options_.config);
+                    static_cast<void>(coordinator.run(events, limit, gpu ? &*gpu : nullptr, std::nullopt, {}, snapshots_, input.string()));
+                }
+            } catch (const std::exception& error) {
+                std::cerr << "Dashboard command failed: " << error.what() << '\n';
+                publish_state("failed");
+            }
+        }
+    }
+    market_engine::app::RuntimeOptions options_;
+    std::shared_ptr<market_engine::app::DashboardSnapshotStore> snapshots_;
+    std::mutex mutex_; std::condition_variable ready_; std::deque<nlohmann::json> commands_;
+    bool stopping_{}; std::thread worker_;
+};
 
 // Prints the contents of the order book. using BookSnapshot reference
 void print_book(const market_engine::market::BookSnapshot& book) {
@@ -83,9 +166,39 @@ int main(int argc, char* argv[]) {
         std::cout << market_engine::app::format_config(options.config);
         const std::string_view mode = options.gpu_feature_upload ? "live RTL + GPU worker" : "live RTL";
         std::cout << "Runtime mode: " << mode << '\n';
+        std::shared_ptr<market_engine::app::DashboardSnapshotStore> dashboard_snapshots;
+        if (!options.no_dashboard) dashboard_snapshots = std::make_shared<market_engine::app::DashboardSnapshotStore>();
         if (!options.input_path) {
-            std::cout << "No input supplied; use --input PATH to provide CSV or MKT1 market events.\n";
+            if (options.no_dashboard) {
+                std::cout << "No input supplied; use --input PATH to provide CSV or MKT1 market events.\n";
+                return 0;
+            }
+            DashboardCommands commands(options, dashboard_snapshots);
+            auto idle_snapshot = *dashboard_snapshots->latest();
+            idle_snapshot.connection_state = "listening";
+            dashboard_snapshots->publish(std::move(idle_snapshot));
+            market_engine::app::DashboardServer dashboard(
+                {options.config.dashboard_bind_address, options.config.dashboard_port, options.config.dashboard_update_hz},
+                dashboard_snapshots, [&](std::string_view body) { return commands.submit(body); });
+            dashboard.start();
+            std::cout << "Dashboard control mode: http://" << options.config.dashboard_bind_address << ':'
+                      << dashboard.local_port() << "/ (Ctrl-C to stop)\n";
+            std::signal(SIGINT, handle_stop_signal);
+            std::signal(SIGTERM, handle_stop_signal);
+            while (!stop_dashboard.load(std::memory_order_relaxed)) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            dashboard.stop();
             return 0;
+        }
+
+        std::optional<market_engine::app::DashboardServer> dashboard;
+        if (dashboard_snapshots) {
+            dashboard.emplace(
+                market_engine::app::DashboardServerOptions{options.config.dashboard_bind_address,
+                                                           options.config.dashboard_port,
+                                                           options.config.dashboard_update_hz},
+                dashboard_snapshots);
+            dashboard->start();
+            std::cout << "Dashboard: http://" << options.config.dashboard_bind_address << ':' << dashboard->local_port() << "/\n";
         }
 
         // This reads the market events from the input file.
@@ -104,7 +217,8 @@ int main(int argc, char* argv[]) {
             events, options.event_limit, gpu_model ? &*gpu_model : nullptr, initial_model,
             options.model_autosave ? [path = *options.model_autosave](const auto& model) {
                 market_engine::app::save_model_file_atomically(path, model);
-            } : std::function<void(const market_engine::market::ModelParameters&)>{});
+            } : std::function<void(const market_engine::market::ModelParameters&)>{},
+            dashboard_snapshots, options.input_path->string());
         if (live.error) {
             std::cerr << "Live RTL error at event " << *live.failure_index << ": "
                       << market_engine::market::to_string(*live.error) << '\n';

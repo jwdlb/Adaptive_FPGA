@@ -95,8 +95,11 @@ FetchContent_MakeAvailable(nlohmann_json Catch2)
 # Main application library.
 add_library(market_engine_app    # Separates reusable application code from the executable entry point.
     src/app/config.cpp
+    src/app/dashboard_snapshot.cpp
+    src/app/dashboard_server.cpp
     src/app/opencl_devices.cpp
     src/app/live_coordinator.cpp
+    src/app/market_data_generator.cpp
     src/app/model_store.cpp
     src/gpu/gpu_model.cpp
     src/gpu/regression_oracle.cpp
@@ -116,7 +119,7 @@ target_compile_definitions(market_engine_app PRIVATE
 
 # Link shared compiler settings and the JSON library.
 target_link_libraries(market_engine_app
-    PUBLIC market_engine_project_options nlohmann_json::nlohmann_json
+    PUBLIC market_engine_project_options nlohmann_json::nlohmann_json Boost::system
 )
 
 # Optional OpenCL support.
@@ -212,6 +215,7 @@ if(BUILD_TESTING)
     # Create the test executable from the listed test source files.
     add_executable(market_engine_tests
         tests/cpp/config_tests.cpp
+        tests/cpp/dashboard_tests.cpp
         tests/cpp/model_store_tests.cpp
         tests/cpp/protocol_tests.cpp
         tests/cpp/order_book_tests.cpp

@@ -100,3 +100,26 @@ On the RTX/OpenCL machine, use enough valid events for one labelled batch:
 
 The existing `--gpu-feature-upload` command name now starts the full streaming
 GPU learner, not merely a copy test.
+
+## Observational dashboard
+
+Run without an input file to keep the localhost control dashboard open:
+
+```bash
+./build/market_engine_demo
+# open http://127.0.0.1:8080/
+```
+
+The browser can generate deterministic CSV data and enqueue replay runs. During
+a run it shows sampled events, the book, all eight fixed-point features, the
+signal, active model, GPU metrics, queue pressure, and latency. A normal
+`--input` run serves the same dashboard only for that run's lifetime.
+
+The server binds `127.0.0.1` by default. Set `dashboardBindAddress` explicitly
+in the JSON configuration to expose it on another interface. `--no-dashboard`
+creates neither the server thread nor the snapshot publisher. To quantify the
+local observation cost:
+
+```bash
+./scripts/benchmark_dashboard.sh build
+```

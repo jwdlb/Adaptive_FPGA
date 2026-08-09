@@ -72,6 +72,7 @@ Config parse_config(std::istream& input) {
         read_if_present(json, "sellThreshold", config.sell_threshold);
         read_if_present(json, "dashboardPort", config.dashboard_port);
         read_if_present(json, "dashboardUpdateHz", config.dashboard_update_hz);
+        read_if_present(json, "dashboardBindAddress", config.dashboard_bind_address);
         read_if_present(json, "enableTrace", config.enable_trace);
         read_if_present(json, "enableOpenCLProfiling", config.enable_opencl_profiling);
         read_if_present(json, "allowCrossedBooks", config.allow_crossed_books);
@@ -113,6 +114,9 @@ void validate_config(const Config& config) {
         config.buy_threshold <= config.sell_threshold) {
         throw ConfigError("buyThreshold must be finite and greater than sellThreshold");
     }
+    if (config.dashboard_bind_address.empty()) {
+        throw ConfigError("dashboardBindAddress must not be empty");
+    }
 }
 
 std::string format_config(const Config& config) {
@@ -130,6 +134,7 @@ std::string format_config(const Config& config) {
            << "  sellThreshold: " << config.sell_threshold << "\n"
            << "  dashboardPort: " << config.dashboard_port << "\n"
            << "  dashboardUpdateHz: " << config.dashboard_update_hz << "\n"
+           << "  dashboardBindAddress: " << config.dashboard_bind_address << "\n"
            << "  enableTrace: " << std::boolalpha << config.enable_trace << "\n"
            << "  enableOpenCLProfiling: " << config.enable_opencl_profiling << "\n"
            << "  allowCrossedBooks: " << config.allow_crossed_books << "\n"
@@ -243,7 +248,7 @@ std::string usage(std::string_view executable_name) {
            "  --gpu-name TEXT            Select a GPU by part of its name\n"
            "  --no-dashboard             Disable dashboard runtime path\n"
            "  --trace                    Request RTL tracing (future phase)\n"
-           "  --benchmark                Reserved for a future benchmark mode\n"
+           "  --benchmark                Reserved for compatibility; use scripts/benchmark_dashboard.sh\n"
            "  --list-opencl-devices      Print detected OpenCL devices\n"
            "  --select-gpu               Select the first available GPU, or the requested GPU\n"
            "  --gpu-smoke-test           Run [1, 2, 3] -> [2, 4, 6] on the selected GPU\n"

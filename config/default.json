@@ -11,9 +11,9 @@
   "sellThreshold": -0.2,
   "dashboardPort": 8080,
   "dashboardUpdateHz": 10,
+  "dashboardBindAddress": "127.0.0.1",
   "enableTrace": false,
   "enableOpenCLProfiling": false,
   "allowCrossedBooks": false,
   "randomSeed": 42
 }
-

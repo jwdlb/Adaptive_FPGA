@@ -23,6 +23,7 @@ struct Config {
     double sell_threshold{-0.2};
     std::uint16_t dashboard_port{8080};
     std::uint32_t dashboard_update_hz{10};
+    std::string dashboard_bind_address{"127.0.0.1"};
     bool enable_trace{false};
     bool enable_opencl_profiling{false};
     bool allow_crossed_books{false};

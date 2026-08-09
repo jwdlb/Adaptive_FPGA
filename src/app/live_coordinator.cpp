@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <exception>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -51,7 +53,9 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
                                 const std::optional<std::uint64_t> event_limit,
                                 gpu::GpuModel* const gpu_model,
                                 const std::optional<market::ModelParameters> initial_model,
-                                std::function<void(const market::ModelParameters&)> model_applied) const {
+                                std::function<void(const market::ModelParameters&)> model_applied,
+                                std::shared_ptr<DashboardSnapshotStore> dashboard_snapshots,
+                                std::string input_name) const {
 #if MARKET_ENGINE_VERILATOR_AVAILABLE
     const market::ModelParameters initial_parameters = initial_model.value_or(initial_model_parameters(config_));
     const std::size_t count = event_limit ?
@@ -63,12 +67,66 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
     // values; only GpuWorker consumes them when GPU mode is enabled.
     app::SpscRingBuffer<verilator::RtlStreamResult> result_ring(kLiveResultRingCapacity);
     gpu::ModelUpdateMailbox update_mailbox;
-    verilator::VerilatorWorker rtl_worker(selected_events, config_.clock_period_ns,
-                                          initial_parameters, result_ring, update_mailbox,
-                                          verilator::kDefaultResultBackpressureTimeout, std::move(model_applied));
-
     LiveResult result{};
     const auto started = std::chrono::steady_clock::now();
+
+    struct ObservedState { std::mutex mutex; DashboardSnapshot snapshot; } observed;
+    observed.snapshot.connection_state = dashboard_snapshots ? "connected" : "disabled";
+    observed.snapshot.state = "running";
+    observed.snapshot.input_file = std::move(input_name);
+    observed.snapshot.total_events = count;
+    observed.snapshot.queue_capacity = result_ring.capacity();
+    observed.snapshot.model = initial_parameters;
+    const auto unix_ms = [] {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    };
+    std::mutex publisher_wait_mutex;
+    std::condition_variable_any publisher_wake;
+    std::jthread snapshot_publisher;
+    if (dashboard_snapshots) {
+        dashboard_snapshots->publish(observed.snapshot);
+        snapshot_publisher = std::jthread([&, dashboard_snapshots](std::stop_token stop) {
+            const auto interval = std::chrono::milliseconds(std::max(1U, 1000U / config_.dashboard_update_hz));
+            while (!stop.stop_requested()) {
+                std::unique_lock wait_lock(publisher_wait_mutex);
+                if (publisher_wake.wait_for(wait_lock, stop, interval, [] { return false; })) break;
+                wait_lock.unlock();
+                DashboardSnapshot copy;
+                { std::lock_guard lock(observed.mutex); copy = observed.snapshot; }
+                copy.published_at_unix_ms = unix_ms();
+                ++copy.sequence;
+                { std::lock_guard lock(observed.mutex); observed.snapshot.sequence = copy.sequence; }
+                dashboard_snapshots->publish(std::move(copy));
+            }
+        });
+    }
+    const auto observe_rtl = [&](const verilator::RtlSnapshot& rtl,
+                                 const market::ModelParameters& model,
+                                 const verilator::VerilatorWorkerMetrics& metrics) {
+        std::lock_guard lock(observed.mutex);
+        auto& snapshot = observed.snapshot;
+        snapshot.processed_events = metrics.input_events_accepted;
+        snapshot.error_events = metrics.error_events;
+        snapshot.book = rtl.book; snapshot.features = rtl.features; snapshot.signal = rtl.signal; snapshot.model = model;
+        snapshot.queue_occupancy = result_ring.size();
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        snapshot.events_per_second = elapsed > 0.0 ? static_cast<double>(metrics.input_events_accepted) / elapsed : 0.0;
+        snapshot.rtl_cycles_per_event = metrics.input_events_accepted == 0U ? 0.0 :
+            static_cast<double>(metrics.rtl_cycles) / static_cast<double>(metrics.input_events_accepted);
+        snapshot.recent_events.clear();
+        const std::size_t end = std::min<std::size_t>(metrics.input_events_accepted, selected_events.size());
+        const std::size_t begin = end > 12U ? end - 12U : 0U;
+        snapshot.recent_events.insert(snapshot.recent_events.end(), selected_events.begin() + begin, selected_events.begin() + end);
+    };
+    auto applied_observer = [&, callback=std::move(model_applied)](const market::ModelParameters& model) {
+        { std::lock_guard lock(observed.mutex); observed.snapshot.model = model; observed.snapshot.latest_update_unix_ms = unix_ms(); }
+        if (callback) callback(model);
+    };
+    verilator::VerilatorWorker rtl_worker(selected_events, config_.clock_period_ns,
+                                          initial_parameters, result_ring, update_mailbox,
+                                          verilator::kDefaultResultBackpressureTimeout,
+                                          std::move(applied_observer), observe_rtl);
 
     std::exception_ptr rtl_failure;
     std::atomic_bool rtl_failed{false};
@@ -91,7 +149,20 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
                                   config_.feature_batch_size, initial_parameters.model_version + 1U,
                                   config_.label_horizon_events, 1,
                                   market::fixed_point::from_double(config_.learning_rate),
-                                  market::fixed_point::from_double(config_.l2_regularisation));
+                                  market::fixed_point::from_double(config_.l2_regularisation),
+                                  [&](const gpu::GpuWorkerMetrics& metrics) {
+                                      std::lock_guard lock(observed.mutex);
+                                      auto& snapshot = observed.snapshot;
+                                      snapshot.gpu_batches = metrics.batches_submitted;
+                                      snapshot.gpu_updates = metrics.model_updates_published;
+                                      snapshot.squared_error_sum_q16 = metrics.latest_squared_error_sum_q16;
+                                      snapshot.correct_predictions = metrics.latest_correct_predictions;
+                                      snapshot.training_rows = metrics.latest_training_rows;
+                                      snapshot.gpu_kernel_ms = metrics.latest_kernel_ms;
+                                      snapshot.gpu_training_ms = metrics.latest_upload_ms + metrics.latest_kernel_ms + metrics.latest_readback_ms;
+                                      snapshot.gpu_update_latency_ms = metrics.latest_update_latency_ms;
+                                      snapshot.latest_update_unix_ms = unix_ms();
+                                  });
         std::exception_ptr gpu_failure;
         std::atomic_bool gpu_failed{false};
         std::thread gpu_thread([&] {
@@ -173,6 +244,21 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
     result.rtl_model_updates_applied = rtl_metrics.model_updates_applied;
     result.rtl_cycles = rtl_metrics.rtl_cycles;
     result.rtl_wall_seconds = result.elapsed_seconds;
+    if (dashboard_snapshots) {
+        snapshot_publisher.request_stop();
+        publisher_wake.notify_all();
+        snapshot_publisher.join();
+        DashboardSnapshot final_snapshot;
+        { std::lock_guard lock(observed.mutex); final_snapshot = observed.snapshot; }
+        final_snapshot.state = result.error ? "failed" : "stopped";
+        final_snapshot.queue_occupancy = 0U;
+        final_snapshot.processed_events = result.processed_events;
+        final_snapshot.events_per_second = result.elapsed_seconds > 0.0 ? result.processed_events / result.elapsed_seconds : 0.0;
+        final_snapshot.rtl_cycles_per_event = result.processed_events == 0U ? 0.0 : static_cast<double>(result.rtl_cycles) / result.processed_events;
+        final_snapshot.published_at_unix_ms = unix_ms();
+        ++final_snapshot.sequence;
+        dashboard_snapshots->publish(std::move(final_snapshot));
+    }
     return result;
 #else
     // Keep the normal application honest in builds where Verilator was not
@@ -180,6 +266,8 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
     static_cast<void>(events);
     static_cast<void>(event_limit);
     static_cast<void>(gpu_model);
+    static_cast<void>(dashboard_snapshots);
+    static_cast<void>(input_name);
     throw std::runtime_error("--live requires a build with Verilator available");
 #endif
 }

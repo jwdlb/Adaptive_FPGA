@@ -24,6 +24,7 @@ inline constexpr std::chrono::seconds kDefaultResultBackpressureTimeout{10};
 struct VerilatorWorkerMetrics {
     std::size_t input_events_accepted{};
     std::size_t stream_results_published{};
+    std::size_t error_events{};
     std::size_t model_updates_applied{};
     std::uint64_t rtl_cycles{};
     std::chrono::nanoseconds result_backpressure_time{};
@@ -31,6 +32,8 @@ struct VerilatorWorkerMetrics {
 
 class VerilatorWorker {
 public:
+    using ObservationCallback = std::function<void(const RtlSnapshot&, const market::ModelParameters&,
+                                                    const VerilatorWorkerMetrics&)>;
     VerilatorWorker(std::span<const market::MarketEvent> events,
                     std::uint32_t clock_period_ns,
                     market::ModelParameters initial_parameters,
@@ -38,7 +41,8 @@ public:
                     gpu::ModelUpdateMailbox& update_mailbox,
                     std::chrono::steady_clock::duration backpressure_timeout =
                         kDefaultResultBackpressureTimeout,
-                    std::function<void(const market::ModelParameters&)> model_applied = {});
+                    std::function<void(const market::ModelParameters&)> model_applied = {},
+                    ObservationCallback observation = {});
 
     VerilatorWorker(const VerilatorWorker&) = delete;
     VerilatorWorker& operator=(const VerilatorWorker&) = delete;
@@ -75,6 +79,7 @@ private:
     std::atomic_bool stream_drained_{false};
     VerilatorWorkerMetrics metrics_{};
     std::function<void(const market::ModelParameters&)> model_applied_;
+    ObservationCallback observation_;
 };
 
 }  // namespace market_engine::verilator
