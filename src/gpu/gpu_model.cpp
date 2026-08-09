@@ -97,6 +97,7 @@ public:
     cl_kernel smoke_kernel{nullptr};
     cl_kernel phase6_update_kernel{nullptr};
     cl_kernel training_kernel{nullptr};
+    cl_kernel training_reduce_kernel{nullptr};
     cl_mem input_buffer{nullptr};
     cl_mem output_buffer{nullptr};
     cl_event input_complete{nullptr};
@@ -110,14 +111,20 @@ public:
     cl_mem stream_input_buffer{nullptr};
     cl_mem stream_label_buffer{nullptr};
     cl_mem stream_update_buffer{nullptr};
+    cl_mem stream_gradient_buffer{nullptr};
+    cl_mem stream_loss_buffer{nullptr};
+    cl_mem stream_correct_buffer{nullptr};
+    cl_mem stream_metrics_buffer{nullptr};
     cl_event stream_unmap_complete{nullptr};
     cl_event stream_kernel_complete{nullptr};
+    cl_event stream_reduce_complete{nullptr};
     cl_event stream_read_complete{nullptr};
     std::int32_t* mapped_stream_values{nullptr};
     std::int32_t* mapped_stream_labels{nullptr};
     std::size_t mapped_stream_rows{0};
     std::size_t stream_capacity_rows{0};
     std::array<std::int32_t, market::FeatureVector::kFeatureCount + 2U> stream_update_values{};
+    std::array<std::int64_t, 3U> stream_training_metrics{};
     std::optional<std::uint64_t> pending_stream_update_version{};
 
     // Create every OpenCL resource needed by the reusable smoke-test operation.
@@ -153,8 +160,10 @@ public:
             check_opencl(status, "creating double_values OpenCL kernel");
             phase6_update_kernel = clCreateKernel(program, "phase6_model_update", &status);
             check_opencl(status, "creating phase6_model_update OpenCL kernel");
-            training_kernel = clCreateKernel(program, "train_linear_model", &status);
-            check_opencl(status, "creating train_linear_model OpenCL kernel");
+            training_kernel = clCreateKernel(program, "regression_row_gradients", &status);
+            check_opencl(status, "creating regression_row_gradients OpenCL kernel");
+            training_reduce_kernel = clCreateKernel(program, "regression_apply_batch", &status);
+            check_opencl(status, "creating regression_apply_batch OpenCL kernel");
 
         } catch (...) {
             // Constructor failures must not leak resources already created above.
@@ -193,11 +202,15 @@ public:
             mapped_stream_labels = nullptr;
         }
         release_event(stream_read_complete);
+        release_event(stream_reduce_complete);
         release_event(stream_kernel_complete);
         release_event(stream_unmap_complete);
         if (stream_update_buffer != nullptr) {
             clReleaseMemObject(stream_update_buffer);
             stream_update_buffer = nullptr;
+        }
+        for (cl_mem* buffer : {&stream_metrics_buffer, &stream_correct_buffer, &stream_loss_buffer, &stream_gradient_buffer}) {
+            if (*buffer != nullptr) { clReleaseMemObject(*buffer); *buffer = nullptr; }
         }
         if (stream_input_buffer != nullptr) {
             clReleaseMemObject(stream_input_buffer);
@@ -231,6 +244,7 @@ public:
             clReleaseKernel(training_kernel);
             training_kernel = nullptr;
         }
+        if (training_reduce_kernel != nullptr) { clReleaseKernel(training_reduce_kernel); training_reduce_kernel = nullptr; }
         if (program != nullptr) {
             clReleaseProgram(program);
             program = nullptr;
@@ -336,6 +350,9 @@ public:
             clReleaseMemObject(stream_label_buffer);
             stream_label_buffer = nullptr;
         }
+        for (cl_mem* buffer : {&stream_metrics_buffer, &stream_correct_buffer, &stream_loss_buffer, &stream_gradient_buffer}) {
+            if (*buffer != nullptr) { clReleaseMemObject(*buffer); *buffer = nullptr; }
+        }
 
         const std::size_t input_bytes = rows * market::FeatureVector::kFeatureCount * sizeof(std::int32_t);
         cl_int status = CL_SUCCESS;
@@ -348,6 +365,14 @@ public:
         stream_update_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
                                               stream_update_values.size() * sizeof(std::int32_t), nullptr, &status);
         check_opencl(status, "creating GPU streaming model-update buffer");
+        stream_gradient_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, input_bytes * sizeof(std::int64_t) / sizeof(std::int32_t), nullptr, &status);
+        check_opencl(status, "creating GPU regression-gradient buffer");
+        stream_loss_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, rows * sizeof(std::int64_t), nullptr, &status);
+        check_opencl(status, "creating GPU regression-loss buffer");
+        stream_correct_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, rows * sizeof(std::int32_t), nullptr, &status);
+        check_opencl(status, "creating GPU regression-accuracy buffer");
+        stream_metrics_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, stream_training_metrics.size() * sizeof(std::int64_t), nullptr, &status);
+        check_opencl(status, "creating GPU regression-metrics buffer");
         stream_update_values.fill(0);
         stream_update_values[market::FeatureVector::kFeatureCount] = 16384;
         stream_update_values[market::FeatureVector::kFeatureCount + 1U] = -16384;
@@ -467,17 +492,18 @@ public:
         return {.features = features, .labels = {mapped_stream_labels, rows}};
     }
 
-    void submit_training_batch(const std::uint64_t version, const std::int32_t learning_rate_q16) {
+    void submit_training_batch(const std::uint64_t version, const std::int32_t learning_rate_q16, const std::int32_t l2_q16) {
         if (mapped_stream_values == nullptr || mapped_stream_labels == nullptr || mapped_stream_rows == 0U) {
             throw std::logic_error("cannot train without mapped features and labels");
         }
-        if (version == 0U || learning_rate_q16 <= 0) {
-            throw std::invalid_argument("GPU training version and learning rate must be positive");
+        if (version == 0U || learning_rate_q16 <= 0 || l2_q16 < 0) {
+            throw std::invalid_argument("GPU training version, learning rate, and L2 regularisation are invalid");
         }
         if (pending_stream_update_version) throw std::logic_error("GPU training update is already in flight");
 
         const cl_uint rows_to_train = static_cast<cl_uint>(mapped_stream_rows);
-        release_event(stream_read_complete); release_event(stream_kernel_complete); release_event(stream_unmap_complete);
+        const std::size_t row_global_size = mapped_stream_rows;
+        release_event(stream_read_complete); release_event(stream_kernel_complete); release_event(stream_reduce_complete); release_event(stream_unmap_complete);
         cl_event label_unmap_complete{nullptr};
         check_opencl(clEnqueueUnmapMemObject(queue, stream_input_buffer, mapped_stream_values,
                                              0, nullptr, &stream_unmap_complete),
@@ -489,16 +515,29 @@ public:
         check_opencl(clSetKernelArg(training_kernel, 0, sizeof(stream_input_buffer), &stream_input_buffer), "setting training features");
         check_opencl(clSetKernelArg(training_kernel, 1, sizeof(stream_label_buffer), &stream_label_buffer), "setting training labels");
         check_opencl(clSetKernelArg(training_kernel, 2, sizeof(rows_to_train), &rows_to_train), "setting training row count");
-        check_opencl(clSetKernelArg(training_kernel, 3, sizeof(learning_rate_q16), &learning_rate_q16), "setting training learning rate");
-        check_opencl(clSetKernelArg(training_kernel, 4, sizeof(stream_update_buffer), &stream_update_buffer), "setting training model state");
+        check_opencl(clSetKernelArg(training_kernel, 3, sizeof(stream_update_buffer), &stream_update_buffer), "setting regression model state");
+        check_opencl(clSetKernelArg(training_kernel, 4, sizeof(stream_gradient_buffer), &stream_gradient_buffer), "setting regression gradients");
+        check_opencl(clSetKernelArg(training_kernel, 5, sizeof(stream_loss_buffer), &stream_loss_buffer), "setting regression losses");
+        check_opencl(clSetKernelArg(training_kernel, 6, sizeof(stream_correct_buffer), &stream_correct_buffer), "setting regression accuracy");
         const cl_event waits[]{stream_unmap_complete, label_unmap_complete};
-        constexpr std::size_t global_size{1U};
-        check_opencl(clEnqueueNDRangeKernel(queue, training_kernel, 1, nullptr, &global_size, nullptr,
-                                            2, waits, &stream_kernel_complete), "running GPU linear training");
+        check_opencl(clEnqueueNDRangeKernel(queue, training_kernel, 1, nullptr, &row_global_size, nullptr,
+                                            2, waits, &stream_kernel_complete), "running parallel GPU regression rows");
         clReleaseEvent(label_unmap_complete);
+        check_opencl(clSetKernelArg(training_reduce_kernel, 0, sizeof(stream_gradient_buffer), &stream_gradient_buffer), "setting regression reduction gradients");
+        check_opencl(clSetKernelArg(training_reduce_kernel, 1, sizeof(stream_loss_buffer), &stream_loss_buffer), "setting regression reduction losses");
+        check_opencl(clSetKernelArg(training_reduce_kernel, 2, sizeof(stream_correct_buffer), &stream_correct_buffer), "setting regression reduction accuracy");
+        check_opencl(clSetKernelArg(training_reduce_kernel, 3, sizeof(rows_to_train), &rows_to_train), "setting regression reduction rows");
+        check_opencl(clSetKernelArg(training_reduce_kernel, 4, sizeof(learning_rate_q16), &learning_rate_q16), "setting regression learning rate");
+        check_opencl(clSetKernelArg(training_reduce_kernel, 5, sizeof(l2_q16), &l2_q16), "setting regression L2 regularisation");
+        check_opencl(clSetKernelArg(training_reduce_kernel, 6, sizeof(stream_update_buffer), &stream_update_buffer), "setting regression output model");
+        check_opencl(clSetKernelArg(training_reduce_kernel, 7, sizeof(stream_metrics_buffer), &stream_metrics_buffer), "setting regression metrics");
+        constexpr std::size_t reduce_global_size{8U};
+        check_opencl(clEnqueueNDRangeKernel(queue, training_reduce_kernel, 1, nullptr, &reduce_global_size, nullptr,
+                                            1, &stream_kernel_complete, &stream_reduce_complete), "reducing GPU regression batch");
+        check_opencl(clEnqueueReadBuffer(queue, stream_metrics_buffer, CL_FALSE, 0, stream_training_metrics.size() * sizeof(std::int64_t), stream_training_metrics.data(), 1, &stream_kernel_complete, nullptr), "reading GPU regression metrics");
         check_opencl(clEnqueueReadBuffer(queue, stream_update_buffer, CL_FALSE, 0,
                                          stream_update_values.size() * sizeof(std::int32_t), stream_update_values.data(),
-                                         1, &stream_kernel_complete, &stream_read_complete), "reading GPU trained model");
+                                         1, &stream_reduce_complete, &stream_read_complete), "reading GPU trained model");
         check_opencl(clFlush(queue), "starting GPU linear training");
         pending_stream_update_version = version;
     }
@@ -601,12 +640,12 @@ MappedTrainingBatch GpuModel::map_training_batch(const std::size_t rows) {
 #endif
 }
 
-void GpuModel::submit_training_batch(const std::uint64_t version, const std::int32_t learning_rate_q16) {
+void GpuModel::submit_training_batch(const std::uint64_t version, const std::int32_t learning_rate_q16, const std::int32_t l2_q16) {
 #if !MARKET_ENGINE_HAS_OPENCL
-    static_cast<void>(version); static_cast<void>(learning_rate_q16);
+    static_cast<void>(version); static_cast<void>(learning_rate_q16); static_cast<void>(l2_q16);
     throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
 #else
-    impl_->submit_training_batch(version, learning_rate_q16);
+    impl_->submit_training_batch(version, learning_rate_q16, l2_q16);
 #endif
 }
 

@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "gpu/gpu_protocol.hpp"
+#include "gpu/regression_oracle.hpp"
 #include "market/fixed_point.hpp"
 
 namespace {
@@ -56,4 +57,23 @@ TEST_CASE("ModelUpdate rejects stale versions and invalid BUY SELL boundaries") 
     update = valid_update();
     update.buy_threshold = update.sell_threshold;
     REQUIRE_THROWS_AS(market_engine::gpu::validate_model_update(update, 6U), std::invalid_argument);
+}
+
+TEST_CASE("fixed-point regression oracle applies a mean batch gradient and L2 penalty") {
+    ModelUpdate initial{};
+    initial.update_version = 2U;
+    initial.buy_threshold = from_double(0.25);
+    initial.sell_threshold = from_double(-0.25);
+    constexpr std::array<std::int32_t, 16> features{
+        65536, 0, 0, 0, 0, 0, 0, 65536,
+        65536, 0, 0, 0, 0, 0, 0, 65536,
+    };
+    constexpr std::array<std::int32_t, 2> labels{65536, 65536};
+    const auto result = market_engine::gpu::run_regression_oracle(features, labels, initial, 65536, 0);
+    REQUIRE(result.metrics.rows == 2U);
+    REQUIRE(result.metrics.correct_predictions == 0U);
+    REQUIRE(result.update.weights[0] == 65536);
+    REQUIRE(result.update.weights[7] == 65536);
+    const auto regularised = market_engine::gpu::run_regression_oracle(features, labels, result.update, 65536, 32768);
+    REQUIRE(regularised.update.weights[0] < result.update.weights[0]);
 }

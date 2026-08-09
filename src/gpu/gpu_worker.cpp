@@ -15,13 +15,13 @@ GpuWorker::GpuWorker(GpuModel& model,
                      const std::uint64_t first_update_version,
                      const std::uint64_t label_horizon_events,
                      const std::int32_t minimum_profit_ticks,
-                     const std::int32_t learning_rate_q16)
+                     const std::int32_t learning_rate_q16, const std::int32_t l2_q16)
     : model_(model), result_ring_(result_ring), update_mailbox_(update_mailbox),
       batch_rows_(batch_rows), next_update_version_(first_update_version),
       label_horizon_events_(label_horizon_events), minimum_profit_ticks_(minimum_profit_ticks),
-      learning_rate_q16_(learning_rate_q16) {
-    if (batch_rows_ == 0U || label_horizon_events_ == 0U || minimum_profit_ticks_ <= 0 || learning_rate_q16_ <= 0) {
-        throw std::invalid_argument("GPU training batch size, horizon, profit threshold, and learning rate must be positive");
+      learning_rate_q16_(learning_rate_q16), l2_q16_(l2_q16) {
+    if (batch_rows_ == 0U || label_horizon_events_ == 0U || minimum_profit_ticks_ <= 0 || learning_rate_q16_ <= 0 || l2_q16_ < 0) {
+        throw std::invalid_argument("GPU training batch, horizon, profit threshold, learning rate, and L2 regularisation are invalid");
     }
 }
 
@@ -61,7 +61,7 @@ void GpuWorker::add_labelled_row(const verilator::RtlStreamResult& entry,
     ++metrics_.labelled_rows_created;
 
     if (mapped_row_count_ == batch_rows_) {
-        model_.submit_training_batch(next_update_version_, learning_rate_q16_);
+        model_.submit_training_batch(next_update_version_, learning_rate_q16_, l2_q16_);
         mapped_values_ = {};
         mapped_labels_ = {};
         mapped_row_count_ = 0U;

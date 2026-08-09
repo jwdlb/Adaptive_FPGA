@@ -1,8 +1,8 @@
 # GPU learner
 
-The current learner is a Q16.16 linear regression-style model. It is real
-OpenCL GPU code, although its first version uses one work item for predictable
-sequential SGD before a later parallel GPU optimisation.
+The current learner is a Q16.16 linear-regression model. OpenCL evaluates one
+training row per work item, then applies a deterministic regularised batch
+gradient to its device-resident model state.
 
 ## Model
 
@@ -32,8 +32,8 @@ The separate label is created from future executable bid/ask prices:
 ## Training and output
 
 For every row, the GPU calculates a score, compares it with `-1`, `0`, or
-`+1`, and applies a small Q16.16 SGD adjustment to all eight weights. The
-configured `learningRate` controls that adjustment.
+`+1`, and produces a gradient contribution. The batch mean gradient and the
+configured Q16.16 L2 penalty are then applied to all eight weights.
 
 After a full batch, the GPU retains its updated model state, chooses basic
 BUY/SELL thresholds from profitable batch scores, and returns a complete

@@ -87,7 +87,8 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
         gpu::GpuWorker gpu_worker(*gpu_model, result_ring, update_mailbox,
                                   config_.feature_batch_size, 2U,
                                   config_.label_horizon_events, 1,
-                                  market::fixed_point::from_double(config_.learning_rate));
+                                  market::fixed_point::from_double(config_.learning_rate),
+                                  market::fixed_point::from_double(config_.l2_regularisation));
         std::exception_ptr gpu_failure;
         std::atomic_bool gpu_failed{false};
         std::thread gpu_thread([&] {

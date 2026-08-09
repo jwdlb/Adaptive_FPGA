@@ -95,7 +95,7 @@ public:
     // Unmap the completed training batch and have the GPU fine-tune its
     // persistent linear weights and BUY/SELL thresholds. The GPU returns a full
     // replacement ModelUpdate through the existing poll/mailbox path.
-    void submit_training_batch(std::uint64_t version, std::int32_t learning_rate_q16);
+    void submit_training_batch(std::uint64_t version, std::int32_t learning_rate_q16, std::int32_t l2_q16 = 0);
     [[nodiscard]] std::optional<ModelUpdate> poll_training_update();
     void discard_training_batch();
 

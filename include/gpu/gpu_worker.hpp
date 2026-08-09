@@ -36,7 +36,8 @@ public:
               std::uint64_t first_update_version = 2U,
               std::uint64_t label_horizon_events = 100U,
               std::int32_t minimum_profit_ticks = 1,
-              std::int32_t learning_rate_q16 = 66);
+              std::int32_t learning_rate_q16 = 66,
+              std::int32_t l2_q16 = 0);
 
     GpuWorker(const GpuWorker&) = delete;
     GpuWorker& operator=(const GpuWorker&) = delete;
@@ -69,6 +70,7 @@ private:
     const std::uint64_t label_horizon_events_;
     const std::int32_t minimum_profit_ticks_;
     const std::int32_t learning_rate_q16_;
+    const std::int32_t l2_q16_;
     std::span<std::int32_t> mapped_values_{};
     std::span<std::int32_t> mapped_labels_{};
     std::size_t mapped_row_count_{};
