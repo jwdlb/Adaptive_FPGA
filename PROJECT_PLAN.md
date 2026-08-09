@@ -114,7 +114,6 @@ Adaptive_FPGA/
 │   ├── gpu/
 │   │   ├── gpu_model.cpp
 │   │   ├── gpu_worker.cpp
-│   │   ├── feature_uploader.cpp
 │   │   └── model_update_mailbox.cpp
 │   └── market/
 │       ├── event.cpp
@@ -135,7 +134,6 @@ Adaptive_FPGA/
 │   ├── gpu/
 │   │   ├── gpu_model.hpp
 │   │   ├── gpu_worker.hpp
-│   │   ├── feature_uploader.hpp
 │   │   └── model_update_mailbox.hpp
 │   └── market/
 │       ├── event.hpp
@@ -394,12 +392,6 @@ Implement:
 - profiling only in benchmark mode;
 - a live-path-to-RTL hand-off that validates a complete newest `ModelUpdate`, writes
   all ten fields to the shadow bank, and issues one commit only at an event boundary.
-
-The earlier fixed 32 x 8 A/B host-buffer uploader remains useful OpenCL prototype
-work, but it is not the final normal live transport. In the Level 2 path, the host
-result ring absorbs the backlog and the GPU worker fills a configurable `N x 8`
-mapped OpenCL buffer. A second OpenCL buffer is an optional later optimisation for
-overlap, not a correctness requirement.
 
 #### Level 2 streaming transport
 

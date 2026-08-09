@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "app/opencl_devices.hpp"
-#include "gpu/feature_buffers.hpp"
 #include "gpu/gpu_protocol.hpp"
 
 namespace market_engine::gpu {
@@ -41,8 +40,8 @@ struct MappedTrainingBatch {
     std::span<std::int32_t> labels{};
 };
 
-// Owns the reusable OpenCL connection for a selected GPU and two device-side
-// FeatureBatch buffers. It deliberately knows nothing about the learner or RTL.
+// Owns the reusable OpenCL connection for a selected GPU. It deliberately
+// knows nothing about the learner or RTL.
 class GpuModel {
 public:
     // Select a GPU and create its OpenCL context, queue, compiled smoke kernel,
@@ -72,19 +71,9 @@ public:
     // for this operation's completion event before returning the result.
     [[nodiscard]] std::vector<float> double_values(std::span<const float> input);
 
-    // Mark one Ready host batch InFlight before giving its pointer to OpenCL,
-    // then enqueue a non-blocking copy into the matching device buffer. This
-    // keeps the CPU batch protected for the whole asynchronous transfer.
-    void enqueue_feature_batch(FeatureBufferPool& host_buffers, std::size_t buffer_index);
-    // Poll one non-blocking host-to-GPU feature upload. Return false while the
-    // copy is queued/running; once its event completes, release that event and
-    // make the paired host slot Free. A later learner will extend this tracking
-    // so the slot is freed only after the learner finishes reading it too.
-    [[nodiscard]] bool poll_feature_upload_finished(FeatureBufferPool& host_buffers, std::size_t buffer_index);
-
     // Map one configurable `[sample][8 features]` OpenCL input buffer for C++
     // writes. GpuWorker fills this memory directly from SPSC results; there is no
-    // intermediate CPU FeatureBatch. The returned span contains rows * 8 Q16.16
+    // intermediate host-side upload buffer. The returned span contains rows * 8 Q16.16
     // values and remains valid only until submit_phase6_model_update() or
     // discard_stream_feature_rows() is called.
     [[nodiscard]] std::span<std::int32_t> map_stream_feature_rows(std::size_t rows);

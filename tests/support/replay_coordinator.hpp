@@ -12,10 +12,6 @@
 #include "app/config.hpp"
 #include "market/order_book.hpp"
 
-namespace market_engine::gpu {
-class GpuModel;
-}
-
 namespace market_engine::test_support {
 
 // Results from a completed reference replay or its first encountered error.
@@ -31,8 +27,6 @@ struct ReplayResult {
     market::ModelParameters final_parameters{};
     std::uint64_t rtl_cycles{};
     double rtl_wall_seconds{};
-    std::size_t gpu_feature_batches_submitted{};
-    std::size_t gpu_feature_uploads_completed{};
 };
 
 // Test-only coordinator for deterministic C++ reference and RTL comparisons.
@@ -43,8 +37,7 @@ public:
     [[nodiscard]] ReplayResult run_reference(std::span<const market::MarketEvent> events,
                                              std::optional<std::uint64_t> event_limit) const;
     [[nodiscard]] ReplayResult run_verilator_check(std::span<const market::MarketEvent> events,
-                                                    std::optional<std::uint64_t> event_limit,
-                                                    gpu::GpuModel* gpu_model = nullptr) const;
+                                                    std::optional<std::uint64_t> event_limit) const;
 
 private:
     app::Config config_;

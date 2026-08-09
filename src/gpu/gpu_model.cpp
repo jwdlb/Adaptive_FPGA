@@ -14,7 +14,6 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 
 #if MARKET_ENGINE_HAS_OPENCL
@@ -103,15 +102,11 @@ public:
     cl_event input_complete{nullptr};
     cl_event kernel_complete{nullptr};
     cl_event output_complete{nullptr};
-    // These are the two real device-memory buffers corresponding to the two
-    // FeatureBufferPool slots. Each holds exactly one contiguous [32][8] batch.
-    std::array<cl_mem, FeatureBufferPool::kBufferCount> feature_input_buffers{};
-    std::array<cl_event, FeatureBufferPool::kBufferCount> feature_upload_complete{};
     std::size_t buffer_capacity{0};
 
     // Streaming-path OpenCL objects. The input buffer is allocated with host
     // mapping support so GpuWorker can write its `[N][8]` values directly into
-    // OpenCL-visible memory instead of first building another CPU FeatureBatch.
+    // OpenCL-visible memory without an intermediate host-side upload buffer.
     cl_mem stream_input_buffer{nullptr};
     cl_mem stream_label_buffer{nullptr};
     cl_mem stream_update_buffer{nullptr};
@@ -161,13 +156,6 @@ public:
             training_kernel = clCreateKernel(program, "train_linear_model", &status);
             check_opencl(status, "creating train_linear_model OpenCL kernel");
 
-            // Allocate the two actual OpenCL input buffers now. They are kept on
-            // the selected GPU and later learner kernels will read from them.
-            for (std::size_t index = 0; index < feature_input_buffers.size(); ++index) {
-                feature_input_buffers[index] = clCreateBuffer(
-                    context, CL_MEM_READ_ONLY, sizeof(FeatureBatch), nullptr, &status);
-                check_opencl(status, "creating GPU feature input buffer " + std::to_string(index));
-            }
         } catch (...) {
             // Constructor failures must not leak resources already created above.
             cleanup();
@@ -223,13 +211,6 @@ public:
         release_event(output_complete);
         release_event(kernel_complete);
         release_event(input_complete);
-        for (cl_event& event : feature_upload_complete) release_event(event);
-        for (cl_mem& buffer : feature_input_buffers) {
-            if (buffer != nullptr) {
-                clReleaseMemObject(buffer);
-                buffer = nullptr;
-            }
-        }
         if (output_buffer != nullptr) {
             clReleaseMemObject(output_buffer);
             output_buffer = nullptr;
@@ -329,61 +310,6 @@ public:
                      "receiving smoke-test output from GPU");
         check_opencl(clWaitForEvents(1, &output_complete), "waiting for smoke-test output");
         return output;
-    }
-
-    // Start copying one Ready host batch to the matching real GPU buffer. The
-    // slot is marked InFlight before OpenCL receives its source pointer, so the
-    // CPU is protected even during the submission call itself.
-    void enqueue_feature_batch(FeatureBufferPool& host_buffers, std::size_t buffer_index) {
-        // Validate the index before indexing this model's matching OpenCL event
-        // array; FeatureBufferPool owns the authoritative A/B slot count.
-        static_cast<void>(host_buffers.state(buffer_index));
-        if (host_buffers.gpu_is_busy()) {
-            throw std::logic_error("cannot upload a feature batch while another buffer is InFlight");
-        }
-        if (feature_upload_complete[buffer_index] != nullptr) {
-            throw std::logic_error("GPU feature buffer already has an unfinished upload");
-        }
-        host_buffers.begin_gpu_work(buffer_index);
-        const FeatureBatch& batch = host_buffers.gpu_batch(buffer_index);
-        try {
-            check_opencl(clEnqueueWriteBuffer(queue, feature_input_buffers[buffer_index], CL_FALSE, 0,
-                                              sizeof(FeatureBatch), batch.data(), 0, nullptr,
-                                              &feature_upload_complete[buffer_index]),
-                         "sending feature batch to GPU buffer " + std::to_string(buffer_index));
-        } catch (...) {
-            // If no event was created, OpenCL rejected the command before it
-            // could read the source. The slot can safely return to Ready.
-            if (feature_upload_complete[buffer_index] == nullptr) {
-                host_buffers.cancel_gpu_work(buffer_index);
-            }
-            throw;
-        }
-        check_opencl(clFlush(queue), "starting feature-batch GPU upload");
-    }
-
-    // Poll the host-to-GPU upload event without blocking replay. A completed
-    // event means the GPU has finished reading this host slot, so it can return
-    // from InFlight to Free and be used for a later feature batch.
-    [[nodiscard]] bool poll_feature_upload_finished(FeatureBufferPool& host_buffers, std::size_t buffer_index) {
-        static_cast<void>(host_buffers.gpu_batch(buffer_index));
-        cl_event& event = feature_upload_complete[buffer_index];
-        if (event == nullptr) {
-            throw std::logic_error("GPU feature buffer has no upload to poll");
-        }
-        cl_int execution_status = CL_QUEUED;
-        check_opencl(clGetEventInfo(event, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(execution_status),
-                                    &execution_status, nullptr),
-                     "polling feature-batch GPU upload");
-        if (execution_status < 0) {
-            throw std::runtime_error("feature-batch GPU upload failed (OpenCL error " +
-                                     std::to_string(execution_status) + ")");
-        }
-        if (execution_status != CL_COMPLETE) return false;
-
-        release_event(event);
-        host_buffers.finish_gpu_work(buffer_index);
-        return true;
     }
 
     // Ensure the reusable mapped OpenCL input and small update-output buffer are
@@ -632,26 +558,6 @@ std::vector<float> GpuModel::double_values(std::span<const float> input) {
 #endif
 }
 
-void GpuModel::enqueue_feature_batch(FeatureBufferPool& host_buffers, const std::size_t buffer_index) {
-#if !MARKET_ENGINE_HAS_OPENCL
-    static_cast<void>(host_buffers);
-    static_cast<void>(buffer_index);
-    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
-#else
-    impl_->enqueue_feature_batch(host_buffers, buffer_index);
-#endif
-}
-
-bool GpuModel::poll_feature_upload_finished(FeatureBufferPool& host_buffers, const std::size_t buffer_index) {
-#if !MARKET_ENGINE_HAS_OPENCL
-    static_cast<void>(host_buffers);
-    static_cast<void>(buffer_index);
-    throw app::OpenclSelectionError("OpenCL support was not found when this project was configured");
-#else
-    return impl_->poll_feature_upload_finished(host_buffers, buffer_index);
-#endif
-}
-
 std::span<std::int32_t> GpuModel::map_stream_feature_rows(const std::size_t rows) {
 #if !MARKET_ENGINE_HAS_OPENCL
     static_cast<void>(rows);
@@ -733,19 +639,6 @@ GpuSmokeTestResult run_gpu_smoke_test(std::optional<std::uint32_t> gpu_index,
         GpuSmokeTestResult result;
         result.device = model.device();
         result.output = model.double_values(input);
-        // Also exercise one of the real [32][8] GPU input buffers. The event
-        // confirms the asynchronous host-to-device copy finishes before its
-        // host slot becomes reusable.
-        FeatureBufferPool feature_buffers;
-        const std::size_t buffer_index = *feature_buffers.acquire_for_filling();
-        FeatureBatch feature_batch{};
-        feature_batch[0][0] = 1;
-        feature_batch[31][7] = 65536;
-        feature_buffers.finish_filling(buffer_index, feature_batch);
-        model.enqueue_feature_batch(feature_buffers, buffer_index);
-        while (!model.poll_feature_upload_finished(feature_buffers, buffer_index)) {
-            std::this_thread::yield();
-        }
         // A correct kernel must preserve the input length.
         if (result.output.size() != expected.size()) {
             result.message = "GPU returned the wrong number of smoke-test values";
@@ -759,7 +652,7 @@ GpuSmokeTestResult run_gpu_smoke_test(std::optional<std::uint32_t> gpu_index,
             }
         }
         result.status = GpuSmokeTestStatus::passed;
-        result.message = "GPU returned [2, 4, 6] for input [1, 2, 3] and accepted one 32 x 8 feature batch";
+        result.message = "GPU returned [2, 4, 6] for input [1, 2, 3]";
         return result;
     } catch (const app::OpenclSelectionError& error) {
         // A laptop with no requested GPU can skip this hardware-only test. An

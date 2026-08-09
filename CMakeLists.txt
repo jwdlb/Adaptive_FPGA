@@ -101,8 +101,6 @@ add_library(market_engine_app    # Separates reusable application code from the 
     src/gpu/gpu_worker.cpp
     src/gpu/gpu_protocol.cpp
     src/gpu/model_update_mailbox.cpp
-    src/gpu/feature_buffers.cpp
-    src/gpu/feature_uploader.cpp
     src/io/event_reader.cpp
     src/market/event.cpp
     src/market/order_book.cpp
@@ -220,7 +218,6 @@ if(BUILD_TESTING)
         tests/cpp/gpu_model_tests.cpp
         tests/cpp/gpu_protocol_tests.cpp
         tests/cpp/feature_batch_tests.cpp
-        tests/cpp/feature_buffers_tests.cpp
         tests/cpp/streaming_primitives_tests.cpp
         tests/cpp/verilator_worker_tests.cpp
         tests/support/replay_coordinator.cpp
