@@ -98,6 +98,57 @@ public:
         if (!dut_.in_ready) throw std::runtime_error("RTL pipeline did not become ready within the cycle limit");   // Converts a stuck pipeline into a clear error instead of an infinite simulation loop.
     }
 
+    // Drive one already-accepted C++ event onto the scalar Verilator input pins.
+    // The worker uses this only for a clock where the adapter has reported that
+    // its direct valid/ready event input is available.
+    void drive_event(const market::MarketEvent& event) {
+        dut_.timestamp_ns = event.timestamp_ns;
+        dut_.event_type = static_cast<std::uint8_t>(event.type);
+        dut_.side = static_cast<std::uint8_t>(event.side);
+        dut_.price_ticks = static_cast<std::uint32_t>(event.price_ticks);
+        dut_.quantity = event.quantity;
+    }
+
+    [[nodiscard]] bool input_ready() const noexcept { return dut_.in_ready != 0; }
+
+    [[nodiscard]] bool stream_result_valid() const noexcept { return dut_.result_valid != 0; }
+
+    // Decode a held adapter result directly into caller-owned storage. The caller
+    // normally passes an SPSC slot it has already reserved; this avoids creating a
+    // second temporary RtlStreamResult between Verilator and the host ring.
+    void read_stream_result_into(RtlStreamResult& destination) const {
+        if (!stream_result_valid()) throw std::logic_error("cannot read an RTL stream result while result_valid is low");
+        destination.event_index = dut_.result_event_index;
+        destination.timestamp_ns = dut_.result_timestamp_ns;
+        destination.error = static_cast<market::BookError>(dut_.result_error);
+        destination.features.valid = dut_.result_feature_valid != 0;
+        for (std::size_t index = 0; index < kFeatureCount; ++index) {
+            destination.features.values[index] = stream_feature_value(index);
+        }
+    }
+
+    // Advance exactly one simulated RTL clock, optionally offering one event and
+    // accepting one result that was already stable before this clock. Capturing
+    // both handshakes before tick() is what gives the caller a precise answer
+    // about which values crossed each valid/ready boundary.
+    [[nodiscard]] RunnerStep step(const market::MarketEvent* const input_event,
+                                  const bool accept_stream_result) {
+        const bool input_accepted = input_event != nullptr && input_ready();
+        const bool result_accepted = stream_result_valid() && accept_stream_result;
+
+        if (input_accepted) drive_event(*input_event);
+        dut_.in_valid = input_accepted ? 1 : 0;
+        dut_.result_ready = accept_stream_result ? 1 : 0;
+        tick();
+        dut_.in_valid = 0;
+
+        if (result_accepted) {
+            ++metrics_.completed_events;
+            latest_ = read_snapshot();
+        }
+        return {.input_accepted = input_accepted, .result_accepted = result_accepted};
+    }
+
     // send one market event and wait for its result.
     RtlSnapshot process(const market::MarketEvent& event) {
         const auto started = std::chrono::steady_clock::now();   // 
@@ -107,11 +158,7 @@ public:
         // event.type and event.side are strongly typed C++ enums, while Verilator exposes hardware ports as ordinary integer-like C++ fields, hence the explicit casts.
         // price_ticks is logically signed in C++, but gets cast to uint32_t because the generated Verilator port is represented that way. 
         // This preserves the same 32-bit two’s-complement bit pattern. The RTL interprets those bits as signed where appropriate.
-        dut_.timestamp_ns = event.timestamp_ns;
-        dut_.event_type = static_cast<std::uint8_t>(event.type);
-        dut_.side = static_cast<std::uint8_t>(event.side);
-        dut_.price_ticks = static_cast<std::uint32_t>(event.price_ticks);
-        dut_.quantity = event.quantity;
+        drive_event(event);
 
         // This performs a one-clock valid/ready transfer:
         // - Before rising edge:  event fields are driven; in_valid = 1; in_ready = 1
@@ -247,6 +294,18 @@ public:
         }
     }
 
+    // The compact streaming result has its own held feature ports. This helper
+    // keeps their flattening detail out of the SPSC-facing decode function.
+    [[nodiscard]] std::int32_t stream_feature_value(const std::size_t index) const {
+        switch (index) {
+            case 0: return dut_.result_feature0; case 1: return dut_.result_feature1;
+            case 2: return dut_.result_feature2; case 3: return dut_.result_feature3;
+            case 4: return dut_.result_feature4; case 5: return dut_.result_feature5;
+            case 6: return dut_.result_feature6; case 7: return dut_.result_feature7;
+            default: throw std::out_of_range("invalid RTL stream feature index");
+        }
+    }
+
 
     // Decode the RTL's current output pins into the application's C++ snapshot type.
     //
@@ -305,6 +364,15 @@ VerilatorRunner& VerilatorRunner::operator=(VerilatorRunner&&) noexcept = defaul
 void VerilatorRunner::reset() { impl_->reset(); }
 // Send one market event to the RTL and return its completed result.
 RtlSnapshot VerilatorRunner::process(const market::MarketEvent& event) { return impl_->process(event); }
+RunnerStep VerilatorRunner::step(const market::MarketEvent* const input_event,
+                                 const bool accept_stream_result) {
+    return impl_->step(input_event, accept_stream_result);
+}
+bool VerilatorRunner::input_ready() const noexcept { return impl_->input_ready(); }
+bool VerilatorRunner::stream_result_valid() const noexcept { return impl_->stream_result_valid(); }
+void VerilatorRunner::read_stream_result_into(RtlStreamResult& destination) const {
+    impl_->read_stream_result_into(destination);
+}
 // Load a complete set of model parameters and make it active in the RTL.
 void VerilatorRunner::write_model_parameters(const market::ModelParameters& parameters) { impl_->write_model_parameters(parameters); }
 // Return the most recently captured result without advancing the simulation.

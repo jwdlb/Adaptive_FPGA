@@ -48,13 +48,17 @@ module market_stream_adapter #(
   logic core_in_ready;
   logic core_in_valid;
   logic core_event_done;
+  logic event_in_flight;
   logic [63:0] accepted_timestamp_ns;
   logic [63:0] accepted_event_index;
   logic [63:0] next_event_index;
 
   // Do not allow another event to enter while the one-result register is still
   // occupied. This guarantees a completed result can never be overwritten.
-  assign in_ready = core_in_ready && !result_valid;
+  // market_pipeline's internal book can become input-ready before the outer
+  // feature/error result has been emitted. Track the accepted event here so the
+  // streaming boundary remains strictly one input -> one held result.
+  assign in_ready = core_in_ready && !event_in_flight && !result_valid;
   assign core_in_valid = in_valid && in_ready;
   assign event_done = core_event_done;
 
@@ -78,10 +82,15 @@ module market_stream_adapter #(
       accepted_timestamp_ns <= '0;
       accepted_event_index <= '0;
       next_event_index <= '0;
-    end else if (core_in_valid && core_in_ready) begin
-      accepted_timestamp_ns <= in_event.timestamp_ns;
-      accepted_event_index <= next_event_index;
-      next_event_index <= next_event_index + 64'd1;
+      event_in_flight <= 1'b0;
+    end else begin
+      if (core_in_valid && core_in_ready) begin
+        accepted_timestamp_ns <= in_event.timestamp_ns;
+        accepted_event_index <= next_event_index;
+        next_event_index <= next_event_index + 64'd1;
+        event_in_flight <= 1'b1;
+      end
+      if (core_event_done) event_in_flight <= 1'b0;
     end
   end
 

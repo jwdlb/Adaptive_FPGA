@@ -187,7 +187,10 @@ if(VERILATOR_EXECUTABLE)
     set_target_properties(verilated_runtime PROPERTIES IMPORTED_LOCATION ${VERILATED_RUNTIME_LIBRARY})
     find_package(Threads REQUIRED)
 
-    target_sources(market_engine_app PRIVATE src/verilator/verilator_runner.cpp)
+    target_sources(market_engine_app PRIVATE
+        src/verilator/verilator_runner.cpp
+        src/verilator/verilator_worker.cpp
+    )
     target_include_directories(market_engine_app PRIVATE ${VERILATED_PIPELINE_DIR})
     target_include_directories(market_engine_app SYSTEM PRIVATE
         ${VERILATOR_ROOT_DIR}/include
@@ -218,6 +221,7 @@ if(BUILD_TESTING)
         tests/cpp/feature_batch_tests.cpp
         tests/cpp/feature_buffers_tests.cpp
         tests/cpp/streaming_primitives_tests.cpp
+        tests/cpp/verilator_worker_tests.cpp
         tests/support/replay_coordinator.cpp
         src/reference/reference_model.cpp
     )

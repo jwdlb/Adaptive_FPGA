@@ -6,6 +6,7 @@
 
 #include "market/event.hpp"
 #include "market/order_book.hpp"
+#include "verilator/rtl_stream.hpp"
 
 namespace market_engine::verilator {
 
@@ -28,6 +29,14 @@ struct RunnerMetrics {
     double wall_seconds{};   // real host time spent executing process() calls
 };
 
+// What happened during one non-blocking simulated RTL clock. The caller keeps a
+// pending MarketEvent until input_accepted is true, and publishes a reserved SPSC
+// slot only when result_accepted is true.
+struct RunnerStep {
+    bool input_accepted{false};
+    bool result_accepted{false};
+};
+
 // Owns a Verilated market_pipeline instance and provides the C++ side of its
 // valid/ready and atomic-parameter-update interfaces.
 class VerilatorRunner {
@@ -42,6 +51,21 @@ public:
 
     void reset();   // Drives the RTL reset sequence and clears its inputs. Afterwards the RTL must indicate it is ready to accept input.
     [[nodiscard]] RtlSnapshot process(const market::MarketEvent& event);   // Submits one normalized market event and waits for the hardware to finish it.
+    // Advance exactly one RTL clock. `input_event` may be null when there is no
+    // event to offer. `accept_stream_result` performs the output valid/ready
+    // handshake only when a held compact result was already visible before this
+    // clock. The caller must decode that result first, then publish it only if
+    // result_accepted is returned true.
+    [[nodiscard]] RunnerStep step(const market::MarketEvent* input_event,
+                                  bool accept_stream_result);
+    // True when the adapter can accept one event on the next rising edge.
+    [[nodiscard]] bool input_ready() const noexcept;
+    // True when the adapter holds one completed compact result stable for C++.
+    [[nodiscard]] bool stream_result_valid() const noexcept;
+    // Decode the currently held compact result into caller-owned memory without
+    // advancing the simulation. The future RTL worker writes directly into an
+    // SPSC reserved slot through this function.
+    void read_stream_result_into(RtlStreamResult& destination) const;
     void write_model_parameters(const market::ModelParameters& parameters);   // Writes eight weights plus buy/sell thresholds to the RTL’s shadow parameter bank, then asks it to commit them. The implementation checks that the new model version and update counter become active, which enforces the intended atomic-update behavior.
     [[nodiscard]] const RtlSnapshot& latest() const noexcept;   // latest() gives access to the most recently captured RTL result without another simulation step. Its reference stays valid until the runner updates or is destroyed. const noexcept because it's only read already-held state.
     [[nodiscard]] RunnerMetrics metrics() const noexcept;   // metrics() returns a small copy of the cumulative metrics, const noexcept because it's only read already-held state.
