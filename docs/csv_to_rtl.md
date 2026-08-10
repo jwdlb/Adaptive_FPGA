@@ -28,6 +28,11 @@ quantity. See [protocol.md](protocol.md) for the exact file format.
 The RTL worker is the only code allowed to advance the simulated RTL clock. It
 does not wait for GPU training before offering another event.
 
+In dashboard control mode, generation and file loading happen on a separate
+command worker. A `run` command still loads and validates the complete file
+before constructing `LiveCoordinator`; browser data is never streamed directly
+into RTL.
+
 ## Exact types on the path
 
 ```text
@@ -50,10 +55,11 @@ entire input stream into another queue.
 2. RTL says in_ready.
 3. Worker drives that event and raises in_valid for one clock.
 4. RTL accepts it; worker advances its vector index.
-5. RTL updates book, features, and strategy over later clocks.
+5. RTL updates the book, rolling window, features, and strategy over later clocks.
 6. RTL holds one completed result until C++ accepts it.
 ```
 
 If the output route is full, the worker stops accepting new outputs safely.
 That backpressure eventually stops new RTL input too; it never drops or
-overwrites a completed market result.
+overwrites a completed market result. The one-entry RTL register is followed by
+a 1,024-entry host SPSC ring; both boundaries participate in backpressure.

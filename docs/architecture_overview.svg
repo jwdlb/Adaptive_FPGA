@@ -1,119 +1,84 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="920" viewBox="0 0 1440 920">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title desc">
+  <title id="title">Adaptive FPGA–GPU Market Signal Engine architecture</title>
+  <desc id="desc">Data and control flow between market files, the C++ runtime, Verilated SystemVerilog pipeline, OpenCL GPU learner, atomic model mailbox, and browser dashboard.</desc>
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#334155"/></marker>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#0d1b2d"/></linearGradient>
+    <linearGradient id="rtlFill" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#102f2c"/><stop offset="1" stop-color="#0f2428"/></linearGradient>
+    <linearGradient id="gpuFill" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#261b42"/><stop offset="1" stop-color="#171d35"/></linearGradient>
+    <marker id="arrowBlue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#55b8ff"/></marker>
+    <marker id="arrowGreen" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#54e1b5"/></marker>
+    <marker id="arrowPurple" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#b69cff"/></marker>
+    <marker id="arrowOrange" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#ffb65c"/></marker>
+    <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity=".28"/></filter>
     <style>
-      .title { font: 700 27px Arial, sans-serif; fill: #0f172a; }
-      .subtitle { font: 400 15px Arial, sans-serif; fill: #475569; }
-      .group { font: 700 18px Arial, sans-serif; fill: #0f172a; }
-      .head { font: 700 15px Arial, sans-serif; fill: #0f172a; }
-      .body { font: 13px Arial, sans-serif; fill: #334155; }
-      .small { font: 12px Arial, sans-serif; fill: #475569; }
-      .arrowlabel { font: 700 12px Arial, sans-serif; fill: #475569; }
-      .box { stroke-width: 2; rx: 12; }
+      .title{font:700 30px Inter,Segoe UI,Arial,sans-serif;fill:#f5fbff}.subtitle{font:400 15px Inter,Segoe UI,Arial,sans-serif;fill:#91a8be}
+      .laneTitle{font:700 17px Inter,Segoe UI,Arial,sans-serif;fill:#eef8ff;letter-spacing:.5px}.laneSub{font:400 12px Inter,Segoe UI,Arial,sans-serif;fill:#7991a8}
+      .head{font:700 15px Inter,Segoe UI,Arial,sans-serif;fill:#f2f8fc}.body{font:400 12px Inter,Segoe UI,Arial,sans-serif;fill:#a9bccd}.small{font:400 11px Inter,Segoe UI,Arial,sans-serif;fill:#7890a7}
+      .label{font:700 11px Inter,Segoe UI,Arial,sans-serif;letter-spacing:.3px}.box{stroke-width:1.5}.pill{font:700 10px Inter,Segoe UI,Arial,sans-serif;letter-spacing:.7px}
     </style>
   </defs>
-  <rect width="1440" height="920" fill="#f8fafc"/>
-  <text x="720" y="42" text-anchor="middle" class="title">Adaptive FPGA–GPU Market Signal Engine</text>
-  <text x="720" y="68" text-anchor="middle" class="subtitle">Current architecture: C++ coordinates simulated RTL and GPU learning; they never call each other directly.</text>
+  <rect width="1600" height="1100" fill="url(#background)"/>
+  <circle cx="1450" cy="20" r="300" fill="#123650" opacity=".22"/><circle cx="50" cy="1050" r="280" fill="#163b35" opacity=".18"/>
+  <text id="titleText" x="60" y="58" class="title">Adaptive FPGA–GPU Market Signal Engine</text>
+  <text x="60" y="84" class="subtitle">Implemented runtime • cycle-accurate RTL simulation • bounded streaming • online OpenCL learning • observational WebSocket UI</text>
+  <g transform="translate(1320 42)"><rect width="220" height="38" rx="19" fill="#102538" stroke="#31516b"/><circle cx="21" cy="19" r="5" fill="#54e1b5"/><text x="36" y="23" class="label" fill="#b8cede">CURRENT BACKEND: VERILATOR</text></g>
 
-  <rect x="32" y="102" width="220" height="270" class="box" fill="#e0f2fe" stroke="#0284c7"/>
-  <text x="52" y="132" class="group">1. Market input</text>
-  <rect x="52" y="151" width="180" height="90" class="box" fill="#ffffff" stroke="#7dd3fc"/>
-  <text x="67" y="178" class="head">CSV or MKT1 file</text>
-  <text x="67" y="200" class="body">timestamp · event type</text>
-  <text x="67" y="218" class="body">side · price ticks · qty</text>
-  <rect x="52" y="262" width="180" height="84" class="box" fill="#ffffff" stroke="#7dd3fc"/>
-  <text x="67" y="289" class="head">C++ EventReader</text>
-  <text x="67" y="311" class="body">vector&lt;MarketEvent&gt;</text>
-  <text x="67" y="329" class="small">The vector is the input backlog.</text>
+  <!-- Input lane -->
+  <g filter="url(#shadow)">
+    <rect x="45" y="125" width="1510" height="145" rx="18" fill="#0c1a29" stroke="#284057"/>
+    <text x="68" y="154" class="laneTitle">INPUT &amp; CONTROL PLANE</text><text x="68" y="174" class="laneSub">File-backed replay; browser jobs are serialized away from the event path</text>
+    <g transform="translate(75 193)"><rect width="220" height="54" rx="10" fill="#10263a" stroke="#3474a5" class="box"/><text x="16" y="23" class="head">CSV / MKT1 input</text><text x="16" y="42" class="body">strict decode + validation</text></g>
+    <g transform="translate(385 193)"><rect width="245" height="54" rx="10" fill="#10263a" stroke="#3474a5" class="box"/><text x="16" y="23" class="head">io::read_events()</text><text x="16" y="42" class="body">immutable vector&lt;MarketEvent&gt;</text></g>
+    <path d="M295 220H385" stroke="#55b8ff" stroke-width="2.5" marker-end="url(#arrowBlue)"/><text x="316" y="211" class="label" fill="#55b8ff">FILE BYTES</text>
+    <g transform="translate(980 193)"><rect width="245" height="54" rx="10" fill="#282316" stroke="#a66c28" class="box"/><text x="16" y="23" class="head">DashboardCommands</text><text x="16" y="42" class="body">8-job FIFO • one worker</text></g>
+    <g transform="translate(1300 193)"><rect width="220" height="54" rx="10" fill="#282316" stroke="#a66c28" class="box"/><text x="16" y="23" class="head">CSV generator / replay</text><text x="16" y="42" class="body">persistent control mode</text></g>
+    <path d="M1225 220H1300" stroke="#ffb65c" stroke-width="2.5" marker-end="url(#arrowOrange)"/><text x="1237" y="211" class="label" fill="#ffb65c">JOB</text>
+  </g>
 
-  <rect x="302" y="102" width="786" height="418" class="box" fill="#ecfdf5" stroke="#16a34a"/>
-  <text x="324" y="132" class="group">2. RTL worker and SystemVerilog market pipeline</text>
-  <text x="324" y="155" class="small">One dedicated C++ thread clocks Verilator. In real hardware this region would run on an FPGA clock.</text>
-  <rect x="326" y="184" width="138" height="268" class="box" fill="#ffffff" stroke="#86efac"/>
-  <text x="342" y="212" class="head">Event input</text>
-  <text x="342" y="237" class="body">valid / ready</text>
-  <text x="342" y="258" class="body">MarketEvent</text>
-  <text x="342" y="298" class="small">No C++ input queue.</text>
-  <text x="342" y="316" class="small">Worker holds event until</text>
-  <text x="342" y="334" class="small">RTL accepts it.</text>
-  <rect x="486" y="184" width="156" height="268" class="box" fill="#f0fdf4" stroke="#86efac"/>
-  <text x="502" y="212" class="head">Order book</text>
-  <text x="502" y="237" class="body">10 bids / 10 asks</text>
-  <text x="502" y="258" class="body">Add / Update</text>
-  <text x="502" y="278" class="body">Cancel / Trade</text>
-  <text x="502" y="318" class="small">Best bid and ask</text>
-  <text x="502" y="336" class="small">are executable quotes.</text>
-  <rect x="664" y="184" width="156" height="268" class="box" fill="#f0fdf4" stroke="#86efac"/>
-  <text x="680" y="212" class="head">Feature engine</text>
-  <text x="680" y="237" class="body">8 Q16.16 values</text>
-  <text x="680" y="258" class="body">spread · imbalance</text>
-  <text x="680" y="278" class="body">flow · movement</text>
-  <text x="680" y="318" class="small">Feature 7 = constant 1.0</text>
-  <rect x="842" y="184" width="224" height="268" class="box" fill="#f0fdf4" stroke="#86efac"/>
-  <text x="858" y="212" class="head">Strategy + parameter bank</text>
-  <text x="858" y="237" class="body">linear score and BUY/SELL/HOLD</text>
-  <text x="858" y="266" class="body">8 weights + 2 thresholds</text>
-  <text x="858" y="286" class="body">shadow bank → atomic commit</text>
-  <text x="858" y="326" class="small">No mixed old/new model.</text>
-  <path d="M464 320 L486 320" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M642 320 L664 320" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M820 320 L842 320" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <!-- Host/RTL lane -->
+  <g filter="url(#shadow)">
+    <rect x="45" y="295" width="1510" height="330" rx="18" fill="url(#rtlFill)" stroke="#25695f"/>
+    <text x="68" y="326" class="laneTitle">RTL EXECUTION PLANE</text><text x="68" y="346" class="laneSub">Dedicated C++ thread clocks the Verilated SystemVerilog design; a future FPGA runner can replace this backend</text>
+    <g transform="translate(75 388)"><rect width="210" height="170" rx="12" fill="#112d31" stroke="#2b8577" class="box"/><text x="18" y="29" class="head">VerilatorWorker</text><text x="18" y="54" class="body">sole RTL clock owner</text><text x="18" y="74" class="body">holds input until ready</text><text x="18" y="94" class="body">sole SPSC producer</text><text x="18" y="114" class="body">mailbox consumer</text><rect x="18" y="135" width="118" height="22" rx="11" fill="#173d3a"/><text x="31" y="150" class="pill" fill="#63dfbd">HOST THREAD</text></g>
+    <g transform="translate(345 375)"><rect width="250" height="196" rx="12" fill="#11332e" stroke="#37a88e" class="box"/><text x="18" y="28" class="head">market_stream_adapter</text><text x="18" y="53" class="body">valid / ready MarketEvent input</text><text x="18" y="73" class="body">one event in flight</text><text x="18" y="93" class="body">one held result register</text><line x1="18" y1="112" x2="232" y2="112" stroke="#28564f"/><text x="18" y="136" class="body">result_valid remains asserted</text><text x="18" y="156" class="body">until C++ raises result_ready</text><text x="18" y="180" class="small">No result overwrite or RTL FIFO</text></g>
+    <g transform="translate(655 375)"><rect width="190" height="196" rx="12" fill="#11332e" stroke="#37a88e" class="box"/><text x="18" y="28" class="head">Order book</text><text x="18" y="53" class="body">10 bids + 10 asks</text><text x="18" y="73" class="body">Add / Update</text><text x="18" y="93" class="body">Cancel / Trade</text><text x="18" y="125" class="body">flow deltas</text><text x="18" y="145" class="body">best executable quotes</text><text x="18" y="177" class="small">Aggregated price levels</text></g>
+    <g transform="translate(905 375)"><rect width="220" height="196" rx="12" fill="#11332e" stroke="#37a88e" class="box"/><text x="18" y="28" class="head">Window + features</text><text x="18" y="53" class="body">64-event rolling sums</text><text x="18" y="73" class="body">spread / imbalance</text><text x="18" y="93" class="body">microprice / flows</text><text x="18" y="113" class="body">movement / bias</text><rect x="18" y="139" width="128" height="22" rx="11" fill="#173d3a"/><text x="31" y="154" class="pill" fill="#63dfbd">8 × Q16.16</text><text x="18" y="181" class="small">valid when both sides exist</text></g>
+    <g transform="translate(1185 375)"><rect width="335" height="196" rx="12" fill="#11332e" stroke="#37a88e" class="box"/><text x="18" y="28" class="head">Linear strategy + parameter banks</text><text x="18" y="53" class="body">score = Σ weight[i] × feature[i]</text><text x="18" y="73" class="body">BUY &gt; threshold • SELL &lt; threshold</text><line x1="18" y1="95" x2="317" y2="95" stroke="#28564f"/><text x="18" y="120" class="body">shadow: 8 weights + 2 thresholds</text><text x="18" y="140" class="body">single idle-boundary atomic commit</text><rect x="18" y="158" width="128" height="22" rx="11" fill="#173d3a"/><text x="31" y="173" class="pill" fill="#63dfbd">BUY / HOLD / SELL</text></g>
+    <path d="M285 473H345" stroke="#54e1b5" stroke-width="2.5" marker-end="url(#arrowGreen)"/><text x="294" y="462" class="label" fill="#54e1b5">CLOCK / I/O</text>
+    <path d="M595 473H655" stroke="#54e1b5" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+    <path d="M845 473H905" stroke="#54e1b5" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+    <path d="M1125 473H1185" stroke="#54e1b5" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+  </g>
 
-  <rect x="302" y="558" width="786" height="284" class="box" fill="#eff6ff" stroke="#2563eb"/>
-  <text x="324" y="588" class="group">3. C++ streaming transport and GPU learning</text>
-  <rect x="326" y="615" width="164" height="166" class="box" fill="#ffffff" stroke="#93c5fd"/>
-  <text x="342" y="643" class="head">SPSC ring</text>
-  <text x="342" y="667" class="body">RtlStreamResult</text>
-  <text x="342" y="690" class="body">one producer: RTL</text>
-  <text x="342" y="710" class="body">one consumer: GPU</text>
-  <text x="342" y="746" class="small">No global mutex.</text>
-  <rect x="512" y="615" width="206" height="166" class="box" fill="#ffffff" stroke="#93c5fd"/>
-  <text x="528" y="643" class="head">GpuWorker</text>
-  <text x="528" y="667" class="body">waits H future events</text>
-  <text x="528" y="688" class="body">labels BUY / HOLD / SELL</text>
-  <text x="528" y="709" class="body">maps [N][8] + [N]</text>
-  <text x="528" y="746" class="small">N = featureBatchSize</text>
-  <rect x="740" y="615" width="160" height="166" class="box" fill="#f5f3ff" stroke="#8b5cf6"/>
-  <text x="756" y="643" class="head">OpenCL GPU</text>
-  <text x="756" y="667" class="body">linear learner</text>
-  <text x="756" y="688" class="body">fine-tunes weights</text>
-  <text x="756" y="709" class="body">and thresholds</text>
-  <text x="756" y="746" class="small">Persistent model state</text>
-  <rect x="922" y="615" width="144" height="166" class="box" fill="#ffffff" stroke="#93c5fd"/>
-  <text x="938" y="643" class="head">Mailbox</text>
-  <text x="938" y="667" class="body">ModelUpdate</text>
-  <text x="938" y="688" class="body">latest complete</text>
-  <text x="938" y="709" class="body">replacement</text>
-  <text x="938" y="746" class="small">Mutex-protected.</text>
-  <path d="M490 698 L512 698" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M718 698 L740 698" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M900 698 L922 698" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <!-- streaming/GPU lane -->
+  <g filter="url(#shadow)">
+    <rect x="45" y="650" width="1510" height="275" rx="18" fill="url(#gpuFill)" stroke="#5c4a92"/>
+    <text x="68" y="681" class="laneTitle">STREAMING &amp; LEARNING PLANE</text><text x="68" y="701" class="laneSub">Bounded host transport, future-outcome labelling, mapped OpenCL memory and complete model replacement</text>
+    <g transform="translate(75 750)"><rect width="230" height="130" rx="12" fill="#17243a" stroke="#426d9e" class="box"/><text x="18" y="28" class="head">SPSC result ring</text><text x="18" y="53" class="body">capacity: 1,024 entries</text><text x="18" y="73" class="body">atomic producer/consumer</text><text x="18" y="93" class="body">explicit backpressure</text><text x="18" y="116" class="small">RtlStreamResult • no full book</text></g>
+    <g transform="translate(365 735)"><rect width="265" height="160" rx="12" fill="#211c3b" stroke="#7762b8" class="box"/><text x="18" y="28" class="head">GpuWorker</text><text x="18" y="53" class="body">wait H future events</text><text x="18" y="73" class="body">create BUY / HOLD / SELL labels</text><text x="18" y="93" class="body">fill mapped [N][8] + [N]</text><text x="18" y="113" class="body">poll one in-flight batch</text><rect x="18" y="128" width="118" height="22" rx="11" fill="#302654"/><text x="31" y="143" class="pill" fill="#c5b5ff">HOST THREAD</text></g>
+    <g transform="translate(690 735)"><rect width="285" height="160" rx="12" fill="#211c3b" stroke="#7762b8" class="box"/><text x="18" y="28" class="head">OpenCL GPU</text><text x="18" y="53" class="body">parallel per-row gradients</text><text x="18" y="73" class="body">deterministic batch reduction</text><text x="18" y="93" class="body">learning rate + L2 + clamp</text><text x="18" y="113" class="body">persistent eight-weight model</text><rect x="18" y="128" width="146" height="22" rx="11" fill="#302654"/><text x="31" y="143" class="pill" fill="#c5b5ff">Q16.16 REGRESSION</text></g>
+    <g transform="translate(1035 750)"><rect width="215" height="130" rx="12" fill="#211c3b" stroke="#7762b8" class="box"/><text x="18" y="28" class="head">ModelUpdateMailbox</text><text x="18" y="53" class="body">newest complete update</text><text x="18" y="73" class="body">mutex-protected packet</text><text x="18" y="93" class="body">versioned replacement</text><text x="18" y="116" class="small">Not on high-rate result path</text></g>
+    <g transform="translate(1310 750)"><rect width="210" height="130" rx="12" fill="#211c3b" stroke="#7762b8" class="box"/><text x="18" y="28" class="head">Atomic RTL adoption</text><text x="18" y="53" class="body">validate whole packet</text><text x="18" y="73" class="body">write 10 shadow words</text><text x="18" y="93" class="body">commit between events</text><text x="18" y="116" class="small">Never a mixed model</text></g>
+    <path d="M305 815H365" stroke="#b69cff" stroke-width="2.5" marker-end="url(#arrowPurple)"/><text x="310" y="802" class="label" fill="#b69cff">RESULT</text>
+    <path d="M630 815H690" stroke="#b69cff" stroke-width="2.5" marker-end="url(#arrowPurple)"/><text x="645" y="802" class="label" fill="#b69cff">BATCH</text>
+    <path d="M975 815H1035" stroke="#b69cff" stroke-width="2.5" marker-end="url(#arrowPurple)"/><text x="984" y="802" class="label" fill="#b69cff">MODEL</text>
+    <path d="M1250 815H1310" stroke="#b69cff" stroke-width="2.5" marker-end="url(#arrowPurple)"/>
+  </g>
 
-  <path d="M252 300 L302 300" stroke="#0284c7" stroke-width="3" marker-end="url(#arrow)"/>
-  <text x="263" y="282" class="arrowlabel">MarketEvent</text>
-  <path d="M695 452 L695 558" stroke="#16a34a" stroke-width="3" marker-end="url(#arrow)"/>
-  <text x="706" y="515" class="arrowlabel">RtlStreamResult</text>
-  <path d="M994 615 L994 475 L1066 475" stroke="#8b5cf6" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
-  <path d="M1066 475 L1066 398" stroke="#8b5cf6" stroke-width="3" marker-end="url(#arrow)"/>
-  <text x="1082" y="465" class="arrowlabel">complete ModelUpdate</text>
+  <!-- Cross-lane data arrows -->
+  <path d="M508 247V330H180V388" fill="none" stroke="#55b8ff" stroke-width="3" marker-end="url(#arrowBlue)"/><rect x="244" y="312" width="132" height="24" rx="12" fill="#10263a"/><text x="259" y="328" class="label" fill="#55b8ff">MARKET EVENT</text>
+  <path d="M470 571V690H190V750" fill="none" stroke="#54e1b5" stroke-width="3" marker-end="url(#arrowGreen)"/><rect x="279" y="657" width="158" height="24" rx="12" fill="#12302d"/><text x="293" y="673" class="label" fill="#54e1b5">RTL STREAM RESULT</text>
+  <path d="M1415 750V610H1352V571" fill="none" stroke="#b69cff" stroke-width="3" marker-end="url(#arrowPurple)"/><rect x="1364" y="632" width="156" height="24" rx="12" fill="#271f43"/><text x="1378" y="648" class="label" fill="#b69cff">MODEL UPDATE</text>
 
-  <rect x="1128" y="102" width="278" height="740" class="box" fill="#fff7ed" stroke="#ea580c"/>
-  <text x="1150" y="132" class="group">What is real today?</text>
-  <text x="1150" y="170" class="head">Implemented</text>
-  <text x="1150" y="195" class="body">• Order book, features, strategy</text>
-  <text x="1150" y="217" class="body">• Verilator RTL worker</text>
-  <text x="1150" y="239" class="body">• SPSC and model mailbox</text>
-  <text x="1150" y="261" class="body">• GPU label + learning code</text>
-  <text x="1150" y="283" class="body">• Atomic RTL updates</text>
-  <text x="1150" y="328" class="head">Still to verify</text>
-  <text x="1150" y="353" class="body">• Run on RTX 4060</text>
-  <text x="1150" y="375" class="body">• Long GPU replay</text>
-  <text x="1150" y="397" class="body">• Tune costs / thresholds</text>
-  <text x="1150" y="419" class="body">• Parallelise learner</text>
-  <text x="1150" y="468" class="head">Important boundary</text>
-  <text x="1150" y="493" class="body">The GPU does learning.</text>
-  <text x="1150" y="515" class="body">C++ only coordinates:</text>
-  <text x="1150" y="537" class="body">queues, labels, validation,</text>
-  <text x="1150" y="559" class="body">and safe RTL hand-off.</text>
+  <!-- Observation lane -->
+  <g filter="url(#shadow)">
+    <rect x="45" y="950" width="1510" height="105" rx="18" fill="#191f25" stroke="#66583a"/>
+    <text x="68" y="979" class="laneTitle">OBSERVATION PLANE</text><text x="68" y="999" class="laneSub">Sampled immutable state; no socket or JSON work in the per-event loop</text>
+    <g transform="translate(390 972)"><rect width="240" height="57" rx="10" fill="#25251f" stroke="#8f7946"/><text x="16" y="24" class="head">DashboardSnapshotStore</text><text x="16" y="43" class="body">newest copy-only snapshot</text></g>
+    <g transform="translate(730 972)"><rect width="240" height="57" rx="10" fill="#25251f" stroke="#8f7946"/><text x="16" y="24" class="head">HTTP + WebSocket server</text><text x="16" y="43" class="body">10 Hz default • latest state</text></g>
+    <g transform="translate(1070 972)"><rect width="240" height="57" rx="10" fill="#25251f" stroke="#8f7946"/><text x="16" y="24" class="head">Browser observatory</text><text x="16" y="43" class="body">UI + POST control commands</text></g>
+    <path d="M630 1001H730" stroke="#ffb65c" stroke-width="2.5" marker-end="url(#arrowOrange)"/><path d="M970 1001H1070" stroke="#ffb65c" stroke-width="2.5" marker-end="url(#arrowOrange)"/>
+  </g>
+  <path d="M750 625V943H510V972" fill="none" stroke="#ffb65c" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowOrange)"/><text x="759" y="941" class="label" fill="#ffb65c">SAMPLED STATE + METRICS</text>
+  <path d="M1190 972V910H1190V247" fill="none" stroke="#ffb65c" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowOrange)"/><text x="1202" y="943" class="label" fill="#ffb65c">POST /api/control</text>
 </svg>

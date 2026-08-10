@@ -27,7 +27,8 @@ sell_threshold
 update_version
 ```
 
-The RTL worker validates the update, writes all ten values to its shadow bank,
+The RTL worker rejects a non-newer version or invalid BUY/SELL threshold
+ordering before any RTL write. It then writes all ten values to its shadow bank,
 and commits them together. A signal therefore uses the old model or the full
 new model, never a mixture.
 
@@ -38,7 +39,7 @@ and then version 13 before RTL has applied version 12, applying 12 first adds
 delay without improving the system. The mailbox can safely retain 13 instead.
 
 ```text
-Free -> GPU writes complete model -> Ready -> RTL takes it -> Free
+empty -> GPU publishes complete model -> ready -> RTL takes it -> empty
 ```
 
 The mutex is only around this tiny model packet. It is not on the high-rate
@@ -55,3 +56,8 @@ write SELL     ┘
        v
 commit once -> all ten values become active together
 ```
+
+The commit is attempted only when no held result is waiting and the core is
+ready for another event. After the input stream drains, the RTL worker remains
+alive until the GPU finishes its last full batch and the coordinator closes
+the mailbox, so a final update is not lost during shutdown.

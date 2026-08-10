@@ -12,9 +12,10 @@ Bids: highest first             Asks: lowest first
 The best bid is the highest available buyer price. The best ask is the lowest
 available seller price. They are quotes, not a guaranteed actual trade price.
 
-Supported events are Add, Update, Cancel, and Trade. Unless crossed books are
-explicitly allowed, an event that makes best bid greater than or equal to best
-ask is rejected without changing the book.
+Supported events are Add, Update, Cancel, and Trade. In the operational RTL,
+an event that makes best bid greater than or equal to best ask is rejected
+without changing the book. The C++ reference model can enable crossed books
+for targeted tests, but the current live RTL build does not expose that switch.
 
 For full semantics and feature definitions, see
 [reference_model.md](reference_model.md).

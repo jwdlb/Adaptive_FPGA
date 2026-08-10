@@ -1,8 +1,8 @@
 # GPU learner
 
-The current learner is a Q16.16 linear-regression model. OpenCL evaluates one
-training row per work item, then applies a deterministic regularised batch
-gradient to its device-resident model state.
+The current learner is a Q16.16 linear-regression baseline. OpenCL evaluates
+one training row per work item, then applies a deterministic regularised batch
+gradient to device-resident model state.
 
 ## Model
 
@@ -35,9 +35,11 @@ For every row, the GPU calculates a score, compares it with `-1`, `0`, or
 `+1`, and produces a gradient contribution. The batch mean gradient and the
 configured Q16.16 L2 penalty are then applied to all eight weights.
 
-After a full batch, the GPU retains its updated model state, chooses basic
-BUY/SELL thresholds from profitable batch scores, and returns a complete
-`ModelUpdate` through the mailbox.
+After a full batch, the GPU retains its updated eight weights and returns a
+complete `ModelUpdate` through the mailbox. The current kernels preserve the
+active BUY/SELL thresholds; if an invalid threshold ordering reaches the
+kernel, it repairs the pair to +0.25/-0.25. Threshold optimisation is not yet
+part of training.
 
 ## Batch diagram
 
@@ -48,7 +50,7 @@ row 0: [ f0 f1 f2 f3 f4 f5 f6 1.0 ]  label: +1
 row 1: [ f0 f1 f2 f3 f4 f5 f6 1.0 ]  label:  0
 row 2: [ f0 f1 f2 f3 f4 f5 f6 1.0 ]  label: -1
  ...
-row N: [ f0 f1 f2 f3 f4 f5 f6 1.0 ]  label:  0
+row N-1: [ f0 f1 f2 f3 f4 f5 f6 1.0 ]  label:  0
 ```
 
 All values are signed Q16.16 integers: `65536` means `1.0`. The GPU has two
@@ -72,14 +74,31 @@ small adjustment to each weight
 updated weights + thresholds + version
 ```
 
-The current threshold method is deliberately basic: it examines scores for
-profitable BUY and SELL examples and chooses values between HOLD and those
-scores. It is a starting point to verify the full architecture; later work can
-use a better profit-based threshold search.
+The first kernel, `regression_row_gradients`, runs one work item per row. It
+calculates the score, error, eight row gradients, squared error and a simple
+three-way correctness value. The second kernel, `regression_apply_batch`, runs
+one work item per coefficient, reduces row gradients in a deterministic order,
+applies the mean gradient and L2 penalty, and clamps each weight to ±32.0.
+
+OpenCL profiling events provide upload, kernel, readback and end-to-end update
+timings. The reported `kernelMs` spans both kernel stages.
+
+## Batch lifecycle and backpressure
+
+Only one batch is mapped or in flight. While OpenCL is running, `GpuWorker`
+polls its completion and does not consume additional SPSC results. If the GPU
+is slower than the RTL simulation, ring occupancy rises and eventually
+propagates valid/ready backpressure to RTL.
+
+A partial final batch is discarded. The final `labelHorizonEvents` results are
+also discarded because a future quote is unavailable. This is why an input
+must contain more than the configured horizon plus a full batch to guarantee
+an update.
 
 ## What it is and is not
 
-It is a real GPU learner: an OpenCL kernel performs the score and weight
-updates, and the GPU retains its model state between batches. It is not yet a
-large neural network, a parallel gradient implementation, or a guarantee of
-profitable trading.
+It is a real data-parallel GPU learner: OpenCL work items calculate row
+gradients, another stage reduces and updates weights, and the GPU retains model
+state between batches. It is not a neural network or a guarantee of profitable
+trading. Labels omit fees, slippage, fill probability, queue position and
+market impact.

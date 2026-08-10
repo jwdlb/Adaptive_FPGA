@@ -7,9 +7,10 @@ Run the normal suite:
 ctest --test-dir build --output-on-failure
 ```
 
-It covers C++ order-book rules, RTL/C++ differential replay, a one-million
-event replay, the SPSC ring, mailbox ownership, RTL worker behaviour, and the
-held RTL result register.
+It covers configuration and protocols, C++ order-book/reference semantics,
+dashboard snapshots and HTTP handling, model persistence, RTL/C++ replay,
+SPSC and mailbox ownership, RTL worker behavior, GPU protocol/model behavior,
+and the held RTL result register.
 
 Run the standalone RTL streaming adapter test:
 
@@ -23,11 +24,11 @@ Run the full RTL order-book differential replay:
 cmake --build build --target rtl_differential_test
 ```
 
-The GPU smoke and GPU learner tests skip on this WSL machine because it has no
-selectable OpenCL GPU. On the RTX 4060 machine they should run and verify the
-OpenCL learner path.
+GPU-dependent tests clearly skip when the current host has no selectable
+OpenCL GPU. A skip proves neither success nor failure of GPU execution; run the
+same suite on every target driver/device combination.
 
-## What a successful RTX check should show
+## What a successful GPU-host check should show
 
 ```text
 1. GPU smoke test passes: [1,2,3] becomes [2,4,6].
@@ -40,3 +41,15 @@ OpenCL learner path.
 
 Use a file with more valid events than `labelHorizonEvents + featureBatchSize`;
 the default values mean more than about 1,124 usable rows.
+
+## Test layers
+
+| Layer | Purpose |
+| --- | --- |
+| Catch2 unit/integration tests | C++ types, config, IO, runtime ownership, API and model behavior |
+| Standalone RTL tests | Module-level clocked assertions and expected outputs |
+| RTL/C++ differential replay | Feeds the same deterministic stream to independent implementations and compares every event |
+| OpenCL tests | Device selection, upload/execute/readback and training update semantics |
+
+The long differential target is separate from normal CTest so developers can
+choose the appropriate runtime cost during iteration.
