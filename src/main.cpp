@@ -49,14 +49,26 @@ public:
         if (command.contains("events") && command.at("events").get<std::uint64_t>() == 0U) {
             throw std::invalid_argument("events must be positive");
         }
-        std::lock_guard lock(mutex_);
-        if (commands_.size() >= 8U) throw std::runtime_error("dashboard command queue is full");
-        commands_.push_back(command); ready_.notify_one();
-        return nlohmann::json{{"accepted", true}, {"action", action}, {"queued", commands_.size()}}.dump();
+        std::size_t queued{};
+        {
+            std::lock_guard lock(mutex_);
+            if (commands_.size() >= 8U) throw std::runtime_error("dashboard command queue is full");
+            commands_.push_back(command); queued = commands_.size();
+        }
+        publish_activity("queued", "Queued " + action + " command", 0U, 0U, queued);
+        ready_.notify_one();
+        return nlohmann::json{{"accepted", true}, {"action", action}, {"queued", queued}}.dump();
     }
 private:
-    void publish_state(std::string state) {
-        auto snapshot = *snapshots_->latest(); snapshot.state = std::move(state);
+    void publish_activity(std::string state, std::string message, const std::uint64_t completed,
+                          const std::uint64_t total, const std::size_t queued) {
+        auto snapshot = *snapshots_->latest();
+        snapshot.state = state == "failed" ? "failed" : state == "completed" ? "idle" : state;
+        snapshot.activity_state = std::move(state);
+        snapshot.activity_message = std::move(message);
+        snapshot.activity_completed = completed;
+        snapshot.activity_total = total;
+        snapshot.queued_commands = queued;
         snapshot.published_at_unix_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
         snapshots_->publish(std::move(snapshot));
@@ -64,20 +76,26 @@ private:
     void work() {
         while (true) {
             nlohmann::json command;
+            std::size_t remaining{};
             {
                 std::unique_lock lock(mutex_); ready_.wait(lock, [this] { return stopping_ || !commands_.empty(); });
                 if (stopping_) return;
-                command = std::move(commands_.front()); commands_.pop_front();
+                command = std::move(commands_.front()); commands_.pop_front(); remaining = commands_.size();
             }
             try {
                 if (command.at("action") == "generate") {
-                    publish_state("generating");
                     const auto count = command.value<std::uint64_t>("events", 100000U);
-                    market_engine::app::generate_market_csv(command.at("output").get<std::string>(),
-                                                            command.value<std::uint64_t>("seed", options_.config.random_seed), count);
-                    publish_state("idle");
+                    const std::string output = command.at("output").get<std::string>();
+                    publish_activity("generating", "Generating " + output, 0U, count, remaining);
+                    market_engine::app::generate_market_csv(output,
+                        command.value<std::uint64_t>("seed", options_.config.random_seed), count,
+                        [this, output, remaining](const std::size_t complete, const std::size_t total) {
+                            publish_activity("generating", "Generating " + output, complete, total, remaining);
+                        });
+                    publish_activity("completed", "Created " + output, count, count, remaining);
                 } else {
                     const std::filesystem::path input = command.at("input").get<std::string>();
+                    publish_activity("loading", "Loading " + input.string(), 0U, 0U, remaining);
                     const auto events = market_engine::io::read_events(input);
                     std::optional<std::uint64_t> limit;
                     if (command.contains("events")) limit = command.at("events").get<std::uint64_t>();
@@ -90,7 +108,7 @@ private:
                 }
             } catch (const std::exception& error) {
                 std::cerr << "Dashboard command failed: " << error.what() << '\n';
-                publish_state("failed");
+                publish_activity("failed", error.what(), 0U, 0U, remaining);
             }
         }
     }

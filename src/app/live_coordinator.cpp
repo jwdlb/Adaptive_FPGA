@@ -73,6 +73,9 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
     struct ObservedState { std::mutex mutex; DashboardSnapshot snapshot; } observed;
     observed.snapshot.connection_state = dashboard_snapshots ? "connected" : "disabled";
     observed.snapshot.state = "running";
+    observed.snapshot.activity_state = "running";
+    observed.snapshot.activity_message = "Replaying market events through RTL";
+    observed.snapshot.activity_total = count;
     observed.snapshot.input_file = std::move(input_name);
     observed.snapshot.total_events = count;
     observed.snapshot.queue_capacity = result_ring.capacity();
@@ -107,6 +110,7 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
         std::lock_guard lock(observed.mutex);
         auto& snapshot = observed.snapshot;
         snapshot.processed_events = metrics.input_events_accepted;
+        snapshot.activity_completed = metrics.input_events_accepted;
         snapshot.error_events = metrics.error_events;
         snapshot.book = rtl.book; snapshot.features = rtl.features; snapshot.signal = rtl.signal; snapshot.model = model;
         snapshot.queue_occupancy = result_ring.size();
@@ -251,6 +255,10 @@ LiveResult LiveCoordinator::run(const std::span<const market::MarketEvent> event
         DashboardSnapshot final_snapshot;
         { std::lock_guard lock(observed.mutex); final_snapshot = observed.snapshot; }
         final_snapshot.state = result.error ? "failed" : "stopped";
+        final_snapshot.activity_state = result.error ? "failed" : "completed";
+        final_snapshot.activity_message = result.error ? "Replay stopped after a market-data error" : "Replay completed";
+        final_snapshot.activity_completed = result.processed_events;
+        final_snapshot.activity_total = count;
         final_snapshot.queue_occupancy = 0U;
         final_snapshot.processed_events = result.processed_events;
         final_snapshot.events_per_second = result.elapsed_seconds > 0.0 ? result.processed_events / result.elapsed_seconds : 0.0;

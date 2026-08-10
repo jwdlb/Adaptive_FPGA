@@ -20,6 +20,11 @@ struct DashboardSnapshot {
     std::uint64_t published_at_unix_ms{};
     std::string connection_state{"disconnected"};
     std::string state{"idle"};
+    std::string activity_state{"idle"};
+    std::string activity_message{"Ready for a CSV generation or replay."};
+    std::uint64_t activity_completed{};
+    std::uint64_t activity_total{};
+    std::size_t queued_commands{};
     std::string input_file{};
     std::uint64_t total_events{};
     std::uint64_t processed_events{};

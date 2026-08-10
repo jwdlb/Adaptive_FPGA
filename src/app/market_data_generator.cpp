@@ -13,7 +13,7 @@
 
 namespace market_engine::app {
 void generate_market_csv(const std::filesystem::path& output, const std::uint64_t seed,
-                         const std::size_t event_count) {
+                         const std::size_t event_count, MarketDataProgressCallback progress) {
     if (event_count == 0U) throw std::invalid_argument("event count must be positive");
     if (output.empty()) throw std::invalid_argument("output path must not be empty");
     std::mt19937_64 random(seed);
@@ -50,6 +50,9 @@ void generate_market_csv(const std::filesystem::path& output, const std::uint64_
             }
         }
         events.push_back({1000U + index * 10U, type, side, price, quantity});
+        if (progress && ((index + 1U) % 4096U == 0U || index + 1U == event_count)) {
+            progress(index + 1U, event_count);
+        }
     }
     if (!output.parent_path().empty()) std::filesystem::create_directories(output.parent_path());
     std::ofstream stream(output);

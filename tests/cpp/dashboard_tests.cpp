@@ -40,6 +40,8 @@ TEST_CASE("dashboard snapshot serializes the complete versioned contract") {
     static_assert(std::is_copy_constructible_v<market_engine::app::DashboardSnapshot>);
     market_engine::app::DashboardSnapshot snapshot;
     snapshot.sequence = 7; snapshot.connection_state = "connected"; snapshot.state = "running";
+    snapshot.activity_state = "generating"; snapshot.activity_message = "Generating test.csv";
+    snapshot.activity_completed = 50; snapshot.activity_total = 100;
     snapshot.processed_events = 99; snapshot.events_per_second = 1234.5;
     snapshot.features.values = {1,2,3,4,5,6,7,8}; snapshot.features.valid = true;
     snapshot.model.weights = {8,7,6,5,4,3,2,1}; snapshot.model.model_version = 4;
@@ -49,6 +51,8 @@ TEST_CASE("dashboard snapshot serializes the complete versioned contract") {
     const auto json = nlohmann::json::parse(market_engine::app::dashboard_snapshot_json(snapshot));
     REQUIRE(json.at("schemaVersion") == 1);
     REQUIRE(json.at("sequence") == 7);
+    REQUIRE(json.at("activity").at("state") == "generating");
+    REQUIRE(json.at("activity").at("completed") == 50);
     REQUIRE(json.at("featuresQ16").size() == 8);
     REQUIRE(json.at("model").at("weightsQ16").size() == 8);
     REQUIRE(json.at("signal").at("action") == "Buy");

@@ -16,7 +16,10 @@ std::shared_ptr<const DashboardSnapshot> DashboardSnapshotStore::latest() const 
 std::string dashboard_snapshot_json(const DashboardSnapshot& snapshot) {
     nlohmann::json json{{"schemaVersion", snapshot.schema_version}, {"sequence", snapshot.sequence},
         {"publishedAtUnixMs", snapshot.published_at_unix_ms}, {"connectionState", snapshot.connection_state},
-        {"state", snapshot.state}, {"inputFile", snapshot.input_file}, {"totalEvents", snapshot.total_events},
+        {"state", snapshot.state}, {"activity", {{"state", snapshot.activity_state},
+            {"message", snapshot.activity_message}, {"completed", snapshot.activity_completed},
+            {"total", snapshot.activity_total}, {"queued", snapshot.queued_commands}}},
+        {"inputFile", snapshot.input_file}, {"totalEvents", snapshot.total_events},
         {"processedEvents", snapshot.processed_events}, {"errorEvents", snapshot.error_events},
         {"eventsPerSecond", snapshot.events_per_second}, {"queue", {{"occupancy", snapshot.queue_occupancy}, {"capacity", snapshot.queue_capacity}}},
         {"featuresQ16", snapshot.features.values}, {"featuresValid", snapshot.features.valid},
