@@ -5,10 +5,10 @@
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#0d1b2d"/></linearGradient>
     <linearGradient id="rtlFill" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#102f2c"/><stop offset="1" stop-color="#0f2428"/></linearGradient>
     <linearGradient id="gpuFill" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#261b42"/><stop offset="1" stop-color="#171d35"/></linearGradient>
-    <marker id="arrowBlue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#55b8ff"/></marker>
-    <marker id="arrowGreen" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#54e1b5"/></marker>
-    <marker id="arrowPurple" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#b69cff"/></marker>
-    <marker id="arrowOrange" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#ffb65c"/></marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10Z" fill="#55b8ff"/></marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10Z" fill="#54e1b5"/></marker>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10Z" fill="#b69cff"/></marker>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10Z" fill="#ffb65c"/></marker>
     <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity=".28"/></filter>
     <style>
       .title{font:700 30px Inter,Segoe UI,Arial,sans-serif;fill:#f5fbff}.subtitle{font:400 15px Inter,Segoe UI,Arial,sans-serif;fill:#91a8be}
@@ -66,8 +66,8 @@
   </g>
 
   <!-- Cross-lane data arrows -->
-  <path d="M508 247V330H180V388" fill="none" stroke="#55b8ff" stroke-width="3" marker-end="url(#arrowBlue)"/><rect x="244" y="312" width="132" height="24" rx="12" fill="#10263a"/><text x="259" y="328" class="label" fill="#55b8ff">MARKET EVENT</text>
-  <path d="M470 571V690H190V750" fill="none" stroke="#54e1b5" stroke-width="3" marker-end="url(#arrowGreen)"/><rect x="279" y="657" width="158" height="24" rx="12" fill="#12302d"/><text x="293" y="673" class="label" fill="#54e1b5">RTL STREAM RESULT</text>
+  <path d="M508 247V282H30V420H75" fill="none" stroke="#55b8ff" stroke-width="3" marker-end="url(#arrowBlue)"/><rect x="286" y="270" width="132" height="24" rx="12" fill="#10263a"/><text x="301" y="286" class="label" fill="#55b8ff">MARKET EVENT</text>
+  <path d="M470 571V606H55V815H75" fill="none" stroke="#54e1b5" stroke-width="3" marker-end="url(#arrowGreen)"/><rect x="244" y="594" width="230" height="24" rx="12" fill="#12302d"/><text x="257" y="610" class="label" fill="#54e1b5">HELD FIELDS → RtlStreamResult</text>
   <path d="M1415 750V610H1352V571" fill="none" stroke="#b69cff" stroke-width="3" marker-end="url(#arrowPurple)"/><rect x="1364" y="632" width="156" height="24" rx="12" fill="#271f43"/><text x="1378" y="648" class="label" fill="#b69cff">MODEL UPDATE</text>
 
   <!-- Observation lane -->
@@ -79,6 +79,6 @@
     <g transform="translate(1070 972)"><rect width="240" height="57" rx="10" fill="#25251f" stroke="#8f7946"/><text x="16" y="24" class="head">Browser observatory</text><text x="16" y="43" class="body">UI + POST control commands</text></g>
     <path d="M630 1001H730" stroke="#ffb65c" stroke-width="2.5" marker-end="url(#arrowOrange)"/><path d="M970 1001H1070" stroke="#ffb65c" stroke-width="2.5" marker-end="url(#arrowOrange)"/>
   </g>
-  <path d="M750 625V943H510V972" fill="none" stroke="#ffb65c" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowOrange)"/><text x="759" y="941" class="label" fill="#ffb65c">SAMPLED STATE + METRICS</text>
-  <path d="M1190 972V910H1190V247" fill="none" stroke="#ffb65c" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowOrange)"/><text x="1202" y="943" class="label" fill="#ffb65c">POST /api/control</text>
+  <path d="M1000 625V940H510V972" fill="none" stroke="#ffb65c" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowOrange)"/><rect x="760" y="928" width="188" height="24" rx="12" fill="#191f25"/><text x="773" y="944" class="label" fill="#ffb65c">SAMPLED STATE + METRICS</text>
+  <path d="M1190 972V940H1275V710H1155V247" fill="none" stroke="#ffb65c" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowOrange)"/><rect x="1200" y="928" width="142" height="24" rx="12" fill="#25251f"/><text x="1213" y="944" class="label" fill="#ffb65c">POST /api/control</text>
 </svg>

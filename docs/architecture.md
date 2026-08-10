@@ -165,7 +165,7 @@ sequenceDiagram
     participant RTL as VerilatorWorker
     participant Ring as SPSC ring
     participant GPU as GpuWorker/OpenCL
-    participant Box as Model mailbox
+    participant Mailbox as Model mailbox
 
     Main->>RTL: start(events, initial model)
     Main->>GPU: start (GPU mode)
@@ -175,10 +175,10 @@ sequenceDiagram
     end
     Main->>GPU: input complete after RTL stream drains
     GPU->>GPU: finish full in-flight batch
-    GPU->>Box: publish complete ModelUpdate
+    GPU->>Mailbox: publish complete ModelUpdate
     GPU-->>Main: join
-    Main->>Box: close
-    Box->>RTL: take and atomically commit final update
+    Main->>Mailbox: close
+    Mailbox->>RTL: take and atomically commit final update
     RTL-->>Main: join
 ```
 
@@ -207,4 +207,3 @@ driver, build type, event count and dashboard mode with performance results.
 - GPU labels are retrospective training targets, not ground-truth fills.
 - Verilator throughput is not physical-FPGA throughput.
 - No component submits real orders.
-
